@@ -34,28 +34,28 @@ export default async function handler(req: any, res: any) {
 
     const genAI = getGenAIClient();
     
-    // გამოყენებულია მოდელი პრეფიქსით და სწორად გაწერილი კონფიგურაციით
+    // მოდელის სახელი შეცვლილია სტანდარტულ ფორმატზე, რომელიც არ იწვევს 404 შეცდომას
     const model = genAI.getGenerativeModel({
       model: "gemini-1.5-flash",
       systemInstruction:
-        "შენ ხარ გამოცდილი კლინიკური ფარმაკოლოგი. დააბრუნე მხოლოდ ვალიდური JSON ობიექტი შემდეგი გასაღებებით: " +
+        "შენ ხარ გამოცდილი კლინიკური ფარმაკოლოგი. დააბრუნე მხოლოდ ვალიდური JSON ობიექტი სამი გასაღებით: " +
         "\"indications\", \"sideEffects\", \"mechanism\". არ გამოიყენო Markdown ფორმატირება და არ დაწერო სხვა ტექსტი.",
     });
 
     const result = await model.generateContent({
       contents: [{ role: "user", parts: [{ text: `მედიკამენტი: ${query.trim()}` }] }],
-      generationConfig: { responseMimeType: "application/json" },
+      generationConfig: { 
+        responseMimeType: "application/json",
+        temperature: 0.2 
+      },
     });
 
     const responseText = result.response.text();
     if (!responseText) throw new Error("Empty response from Gemini.");
 
-    let parsedJson;
-    try {
-      parsedJson = JSON.parse(responseText.replace(/```json|```/g, "").trim());
-    } catch {
-      throw new Error("Gemini returned a non-JSON response.");
-    }
+    // JSON-ის გაწმენდა და დაპარსვა
+    const cleanedText = responseText.replace(/```json/g, "").replace(/```/g, "").trim();
+    const parsedJson = JSON.parse(cleanedText);
 
     return res.status(200).json(parsedJson);
   } catch (err: any) {
