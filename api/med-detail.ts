@@ -25,12 +25,16 @@ export default async function handler(req: any, res: any) {
     return res.status(200).end();
   }
 
-  if (req.method !== "GET") {
-    return res.status(405).json({ error: "Method not allowed. Use GET." });
+  if (req.method !== "GET" && req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed. Use GET or POST." });
   }
 
   try {
-    const query = (req.query?.query || req.query?.name) as string | undefined;
+    // Vercel can hand back a duplicated query param as an array (?query=a&query=b),
+    // and some clients may POST a JSON body instead of using a query string — handle both.
+    const rawQuery =
+      req.query?.query ?? req.query?.name ?? req.body?.query ?? req.body?.name;
+    const query = Array.isArray(rawQuery) ? rawQuery[0] : rawQuery;
 
     if (!query || typeof query !== "string" || !query.trim()) {
       return res.status(400).json({ error: "Query or name parameter is required." });
@@ -59,9 +63,16 @@ export default async function handler(req: any, res: any) {
       `მედიკამენტი: ${query.trim()}\n\nდააბრუნე ინფორმაცია ამ მედიკამენტის შესახებ ზემოთ აღწერილი JSON ფორმატით.`
     );
 
+    // If Gemini's safety filters blocked the prompt/response, there's no usable text —
+    // surface that clearly instead of letting .text() throw an opaque error.
+    const blockReason = result.response.promptFeedback?.blockReason;
+    if (blockReason) {
+      throw new Error(`Gemini blocked the request (reason: ${blockReason}).`);
+    }
+
     const responseText = result.response.text();
 
-    if (!responseText) {
+    if (!responseText || !responseText.trim()) {
       throw new Error("Empty response from Gemini.");
     }
 
@@ -69,9 +80,14 @@ export default async function handler(req: any, res: any) {
     try {
       parsedJson = JSON.parse(responseText);
     } catch {
-      // Defensive fallback in case the model wraps the JSON in a code fence
+      // Defensive fallback in case the model wraps the JSON in a code fence anyway
       const cleaned = responseText.replace(/```json|```/g, "").trim();
-      parsedJson = JSON.parse(cleaned);
+      try {
+        parsedJson = JSON.parse(cleaned);
+      } catch {
+        console.error("[Gemini Med Detail] Non-JSON response:", responseText.slice(0, 300));
+        throw new Error("Gemini returned a non-JSON response.");
+      }
     }
 
     return res.status(200).json(parsedJson);

@@ -49,7 +49,7 @@ import {
   ChevronRight
 } from "lucide-react";
 import { Medication, Department, Route, DosageForm, Frequency, MealConnection, TimeOfDay } from "./types";
-import { PRESET_MEDICATIONS, OFFLINE_EMERGENCY_CATALOG } from "./data";
+import { PRESET_MEDICATIONS } from "./data";
 
 const getAlbumIcon = (albumName: string) => {
   const name = albumName.toLowerCase();
@@ -401,135 +401,6 @@ export default function App() {
     };
   };
 
-  const generateMockMedication = (query: string, sourceName: string): any => {
-    const term = query.trim();
-    const queryLower = term.toLowerCase();
-    
-    let tradeName = term;
-    let genericName = "Active Substance";
-    let dosageForm = "Tablet";
-    let price = 4.50;
-    let pharmacologicalGroup = "სხვა";
-    let route = "PO" as any;
-    let frequency = "1x";
-    let mealConnection = "Independent" as any;
-    let timeOfDay = ["Morning"];
-    let indications = ["ინფორმაცია არ არის მითითებული"];
-    let contraindications: string[] = [];
-    let sideEffects = "ინფორმაცია არ არის მითითებული";
-    let clinicalPearls = "ინფორმაცია არ არის მითითებული";
-    let mechanismOfAction = "ინფორმაცია არ არის მითითებული";
-    let dilutionAdminRate = "";
-
-    if (queryLower.includes("კაპტო") || queryLower.includes("captopril") || queryLower.includes("კაპტოპრილი")) {
-      tradeName = "კაპტოპრილი L";
-      genericName = "Captopril";
-      dosageForm = "Tablet";
-      price = 3.20;
-      pharmacologicalGroup = "ACE ინჰიბიტორი";
-      route = "PO";
-      frequency = "2x";
-      mealConnection = "Before meal";
-      timeOfDay = ["Morning", "Evening"];
-      indications = ["არტერიული ჰიპერტენზია", "გულის უკმარისობა"];
-      contraindications = ["CKD"];
-      sideEffects = "მშრალი ხველა, თავბრუსხვევა, გემოს შეცვლა";
-      clinicalPearls = "არ გამოიყენოთ ორსულობისა და თირკმლის მძიმე უკმარისობის დროს.";
-      mechanismOfAction = "ანგიოტენზინ-გარდამქმნელი ფერმენტის (ACE) ბლოკადა, ანგიოტენზინ II-ის სინთეზის შემცირება.";
-    } else if (queryLower.includes("ნურო") || queryLower.includes("იბუპრო") || queryLower.includes("nurofen")) {
-      tradeName = "ნუროფენი ფორტე";
-      genericName = "Ibuprofen";
-      dosageForm = "Tablet";
-      price = 8.50;
-      pharmacologicalGroup = "NSAID";
-      route = "PO";
-      frequency = "3x";
-      mealConnection = "After meal";
-      timeOfDay = ["Morning", "Noon", "Evening"];
-      indications = ["ტკივილი", "ცხელება", "ანთება"];
-      contraindications = ["CKD", "Pregnancy"];
-      sideEffects = "დისპეფსია, კუჭის ლორწოვანის გაღიზიანება, თავის ტკივილი";
-      clinicalPearls = "მიიღეთ საკვებთან ერთად კუჭ-ნაწლავის გაღიზიანების შესამცირებლად. სიფრთხილით CKD დროს.";
-      mechanismOfAction = "ციკლოოქსიგენაზას (COX-1 და COX-2) ფერმენტების შექცევადი ბლოკირება, პროსტაგლანდინების სინთეზის შემცირება.";
-    } else if (queryLower.includes("პარა") || queryLower.includes("para") || queryLower.includes("პარაცე")) {
-      tradeName = "პარაცეტამოლი ექსტრა";
-      genericName = "Paracetamol";
-      dosageForm = "Tablet";
-      price = 2.40;
-      pharmacologicalGroup = "ანალგეტიკი-ანტიპირეტიკი";
-      route = "PO";
-      frequency = "PRN";
-      mealConnection = "Independent";
-      timeOfDay = ["Morning", "Evening"];
-      indications = ["სუსტი და საშუალო ინტენსივობის ტკივილი", "ცხელება"];
-      contraindications = ["Liver Failure"];
-      sideEffects = "იშვიათად კანის ალერგიული რეაქციები, ჰეპატოტოქსიურობა ჭარბი დოზირებისას";
-      clinicalPearls = "არ გადააჭარბოთ 4 გრამს დღეში ღვიძლის დაზიანების თავიდან ასაცილებლად. მოერიდეთ ალკოჰოლს.";
-      mechanismOfAction = "ცენტრალურ ნერვულ სისტემაში პროსტაგლანდინების სინთეზის ინჰიბირება, თერმორეგულაციის ცენტრზე ზემოქმედება.";
-    } else if (queryLower.includes("დექსა") || queryLower.includes("dexa") || queryLower.includes("დექსამეთაზონ")) {
-      tradeName = "დექსამეთაზონი";
-      genericName = "Dexamethasone";
-      dosageForm = "Ampoule";
-      price = 5.80;
-      pharmacologicalGroup = "გლუკოკორტიკოსტეროიდი";
-      route = "IV";
-      frequency = "1x";
-      mealConnection = "Independent";
-      timeOfDay = ["Morning"];
-      indications = ["მძიმე ანთებითი და ალერგიული რეაქციები", "ანაფილაქსიური შოკი", "ასთმის შეტევა"];
-      contraindications = ["Diabetes"];
-      sideEffects = "ჰიპერგლიკემია, არტერიული წნევის მატება, ძილის დარღვევა";
-      clinicalPearls = "მკვეთრად ზრდის გლუკოზის დონეს სისხლში. საჭიროებს ინსულინის ან შაქრის დამწევი დოზის კორექციას.";
-      mechanismOfAction = "უჯრედშიდა გლუკოკორტიკოიდულ რეცეპტორებთან დაკავშირება, ფოსფოლიპაზა A2-ის სინთეზის ინჰიბირება ლიპოკორტინით.";
-    } else if (queryLower.includes("კარდიო") || queryLower.includes("ასპი") || queryLower.includes("aspirin")) {
-      tradeName = "კარდიომაგნილი";
-      genericName = "Acetylsalicylic acid";
-      dosageForm = "Tablet";
-      price = 6.90;
-      pharmacologicalGroup = "ანტიაგრეგანტი";
-      route = "PO";
-      frequency = "1x";
-      mealConnection = "After meal";
-      timeOfDay = ["Evening"];
-      indications = ["თრომბოზების პროფილაქტიკა", "გულის იშემიური დაავადება"];
-      contraindications = ["Pregnancy"];
-      sideEffects = "კუჭ-ნაწლავის ტრაქტიდან სისხლდენის რისკი, ბრონქოსპაზმი";
-      clinicalPearls = "მიიღება საღამოს ჭამის შემდეგ დიდი რაოდენობით წყალთან ერთად.";
-      mechanismOfAction = "თრომბოციტებში ციკლოოქსიგენაზა-1-ის შეუქცევადი ბლოკადა, თრომბოქსან A2-ის სინთეზის დათრგუნვა.";
-    } else {
-      tradeName = term.charAt(0).toUpperCase() + term.slice(1);
-      genericName = term.replace(/[ა-ჰ]/g, (char) => {
-        const geoEnMap: Record<string, string> = {
-          'ა':'a', 'ბ':'b', 'გ':'g', 'დ':'d', 'ე':'e', 'ვ':'v', 'ზ':'z', 'თ':'t', 'ი':'i', 'კ':'k', 'ლ':'l', 'მ':'m', 'ნ':'n', 'ო':'o', 'პ':'p', 'ჟ':'zh', 'რ':'r', 'ს':'s', 'ტ':'t', 'უ':'u', 'ფ':'f', 'ქ':'q', 'ღ':'gh', 'ყ':'qy', 'შ':'sh', 'ჩ':'ch', 'ც':'ts', 'ძ':'dz', 'წ':'ts', 'ჭ':'ch', 'ხ':'kh', 'ჯ':'j', 'ჰ':'h'
-        };
-        return geoEnMap[char] || char;
-      });
-      genericName = genericName.charAt(0).toUpperCase() + genericName.slice(1);
-      price = parseFloat((4.50 + Math.random() * 8.0).toFixed(2));
-      pharmacologicalGroup = "სხვა";
-      indications = ["ინფორმაცია არ არის მითითებული"];
-    }
-
-    return {
-      tradeName,
-      genericName,
-      dosageForm,
-      price,
-      pharmacologicalGroup,
-      route,
-      frequency,
-      mealConnection,
-      timeOfDay,
-      indications,
-      contraindications,
-      sideEffects,
-      clinicalPearls,
-      mechanismOfAction,
-      source: sourceName,
-      dilutionAdminRate
-    };
-  };
-
   const triggerPharmacySync = async () => {
     if (!pharmacyQuery || pharmacyQuery.trim().length < 2) {
       setSyncMessage({ text: "ჩაწერეთ მინიმუმ 2 სიმბოლო მოსაძებნად", type: "info" });
@@ -543,24 +414,27 @@ export default function App() {
     const term = pharmacyQuery.trim();
 
     try {
-      // Query our backend endpoint that calls Gemini (gemini-1.5-flash)
+      // Query our backend endpoint that calls Gemini (gemini-1.5-flash). No local/mock fallback —
+      // if this fails, we surface a clear error instead of silently substituting fake data.
       const response = await fetch(`/api/med-detail?query=${encodeURIComponent(term)}`);
-      if (!response.ok) {
-        const errorJson = await response.json().catch(() => ({}));
-        throw new Error(errorJson.error || `სერვერის შეცდომა: ${response.status}`);
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok || !data) {
+        throw new Error((data && data.error) || `Gemini API Error: სერვერმა დააბრუნა სტატუსი ${response.status}`);
+      }
+      if (data.error) {
+        throw new Error(`Gemini API Error: ${data.error}`);
       }
 
-      const data = await response.json();
-      
       const formattedTradeName = term.charAt(0).toUpperCase() + term.slice(1);
-      
+
       let indicationsArray: string[] = [];
       if (Array.isArray(data.indications)) {
         indicationsArray = data.indications;
       } else if (typeof data.indications === "string") {
         indicationsArray = data.indications.split(/[,;\n]+/).map((i: string) => i.trim()).filter(Boolean);
       }
-      
+
       const syncResultItem = {
         tradeName: formattedTradeName,
         genericName: formattedTradeName,
@@ -579,54 +453,27 @@ export default function App() {
         contraindications: []
       };
 
-      setSyncResults([syncResultItem]);
+      // Auto-fill immediately — no click-to-apply step. The moment Gemini's JSON lands,
+      // the form state updates and the textareas render filled.
       applySyncResult(syncResultItem);
+      setSyncResults([syncResultItem]);
 
       setSyncMessage({
-        text: `✨ სინქრონიზაცია წარმატებულია! ავტომატურად შეივსო "${formattedTradeName}" Gemini AI კლინიკური ბაზიდან.`,
+        text: `✨ სინქრონიზაცია წარმატებულია! ავტომატურად შეივსო "${formattedTradeName}" Gemini AI-დან.`,
         type: "success"
       });
-      setIsSyncLoading(false);
     } catch (err: any) {
-      console.warn("Gemini sync failed, triggering local fallback simulation:", err);
+      console.error("Gemini sync failed:", err);
       setSyncMessage({
-        text: `⚠️ კავშირი ვერ დამყარდა: ${err.message || "კავშირის პრობლემა"}. მიმდინარეობს ძიების სიმულაცია ლოკალურ ბაზაში...`,
-        type: "info"
+        text: `❌ ${err.message || "Gemini API Error: სინქრონიზაცია ვერ მოხერხდა."}`,
+        type: "error"
       });
-
-      setTimeout(() => {
-        const mockItem = generateMockMedication(term, "Local DB");
-        setSyncResults([mockItem]);
-        applySyncResult(mockItem);
-
-        setSyncMessage({
-          text: `✨ სიმულაცია წარმატებულია: ავტომატურად შეივსო "${mockItem.tradeName}" ლოკალური შაბლონით.`,
-          type: "success"
-        });
-        setIsSyncLoading(false);
-      }, 1000);
+      setSyncResults([]);
+    } finally {
+      setIsSyncLoading(false);
     }
   };
 
-  const triggerLocalFallbackSync = () => {
-    const term = pharmacyQuery.toLowerCase().trim();
-    const matched = OFFLINE_EMERGENCY_CATALOG.filter(
-      d => d.tradeName.toLowerCase().includes(term) || d.genericName.toLowerCase().includes(term)
-    );
-
-    setSyncResults(matched.slice(0, 10));
-    if (matched.length > 0) {
-      setSyncMessage({ 
-        text: `ℹ️ ლოკალური კლინიკური ბაზა: მოიძებნა ${matched.length} მედიკამენტი (ოფლაინ რეჟიმი)`, 
-        type: "success" 
-      });
-    } else {
-      setSyncMessage({ 
-        text: "მედიკამენტები ვერ მოიძებნა. შეგიძლიათ ხელით შეავსოთ ველები.", 
-        type: "info" 
-      });
-    }
-  };
 
   const getMechanismOfActionByGeneric = (generic: string, group: string) => {
     const gen = generic.toLowerCase();
@@ -2901,22 +2748,21 @@ export default function App() {
 
                   {syncResults.length > 0 && (
                     <div className="space-y-1.5">
-                      <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wide">არჩეული მატჩები (დააჭირეთ შესავსებად):</span>
+                      <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wide">ავტომატურად შევსებული:</span>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1">
                         {syncResults.map((result, idx) => (
                           <div
                             key={idx}
-                            onClick={() => applySyncResult(result)}
-                            className="p-2.5 bg-white/5 hover:bg-[#6b111a]/20 rounded-xl border border-white/5 cursor-pointer transition-all flex justify-between items-center group text-left"
+                            className="p-2.5 bg-white/5 rounded-xl border border-white/5 flex justify-between items-center text-left"
                           >
                             <div>
-                              <p className="text-xs font-bold text-white group-hover:text-rose-300">{result.tradeName}</p>
+                              <p className="text-xs font-bold text-white">{result.tradeName}</p>
                               {result.genericName && (
                                 <p className="text-[10px] text-slate-400 font-mono mt-0.5">{result.genericName}</p>
                               )}
                             </div>
                             <span className="text-[10px] bg-rose-950/40 text-rose-300 border border-rose-900/30 px-2 py-0.5 rounded font-bold">
-                              {result.source || "PSP"}
+                              {result.source || "Gemini"}
                             </span>
                           </div>
                         ))}
