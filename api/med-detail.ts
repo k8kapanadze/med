@@ -36,7 +36,7 @@ export default async function handler(req: any, res: any) {
     
     // მოდელის სახელი შეცვლილია სტანდარტულ ფორმატზე, რომელიც არ იწვევს 404 შეცდომას
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
+      model: "gemini-1.5-flash-002",
       systemInstruction:
         "შენ ხარ გამოცდილი კლინიკური ფარმაკოლოგი. დააბრუნე მხოლოდ ვალიდური JSON ობიექტი სამი გასაღებით: " +
         "\"indications\", \"sideEffects\", \"mechanism\". არ გამოიყენო Markdown ფორმატირება და არ დაწერო სხვა ტექსტი.",
