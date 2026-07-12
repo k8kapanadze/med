@@ -192,7 +192,6 @@ export default function App() {
   const [isSyncLoading, setIsSyncLoading] = useState(false);
   const [syncResults, setSyncResults] = useState<any[]>([]);
   const [syncMessage, setSyncMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
-  const [detailLoadingIdx, setDetailLoadingIdx] = useState<number | null>(null);
 
   // --- Preset Pathologies List ---
   const DISEASE_PRESETS = [
@@ -283,98 +282,18 @@ export default function App() {
     const term = pharmacyQuery.trim();
 
     try {
-      let url = "";
-      if (pharmacySource === "aversi") {
-        url = `/api/aversi/ka/medikamentebi?search=${encodeURIComponent(term)}`;
-      } else {
-        url = `/api/psp/ka/search?q=${encodeURIComponent(term)}`;
-      }
-
+      const url = `/api/med-detail?source=${encodeURIComponent(pharmacySource)}&q=${encodeURIComponent(term)}`;
       const response = await fetch(url);
+      const data = await response.json();
+
       if (!response.ok) {
-        throw new Error(`შეცდომა კავშირისას: ${response.status}`);
+        // 404 here means the serverless function reached the pharmacy site
+        // but found no matching product — fall back to the offline catalog
+        // instead of surfacing a raw HTTP error to the clinician.
+        throw new Error(data?.error || `შეცდომა კავშირისას: ${response.status}`);
       }
 
-      const htmlText = await response.text();
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(htmlText, "text/html");
-      const items: any[] = [];
-
-      if (pharmacySource === "aversi") {
-        const productNodes = doc.querySelectorAll(".product-layout, .product-thumb, .item, .product-item, .med-item");
-        productNodes.forEach(node => {
-          const tradeNameEl = node.querySelector(".name, .title, h4, h5, a.name, .product-name");
-          const tradeName = tradeNameEl?.textContent?.trim() || "";
-          
-          const genericEl = node.querySelector(".inn, .generic, .composition, .subtitle");
-          const genericName = genericEl?.textContent?.trim() || "";
-          
-          const priceEl = node.querySelector(".price, .price-new, .med-price");
-          let priceNum: number | undefined = undefined;
-          if (priceEl) {
-            const priceText = priceEl.textContent || "";
-            const matchedPrice = priceText.replace(/[^\d.]/g, "");
-            if (matchedPrice) priceNum = parseFloat(matchedPrice);
-          }
-
-          const formEl = node.querySelector(".form, .dosage, .type, .med-form");
-          const dosageForm = formEl?.textContent?.trim() || "Tablet";
-
-          // Grab the link to the product's own page so we can later fetch
-          // its full annotation (indications/side effects/mechanism).
-          const linkEl = node.querySelector("a[href]") as HTMLAnchorElement | null;
-          const detailUrl = linkEl?.getAttribute("href") || "";
-
-          if (tradeName) {
-            items.push({
-              tradeName,
-              genericName: genericName || "",
-              dosageForm,
-              price: priceNum,
-              source: "Aversi",
-              detailUrl
-            });
-          }
-        });
-      } else {
-        const productNodes = doc.querySelectorAll(".product-layout, .product-item, .item, .product-box, .product_box");
-        productNodes.forEach(node => {
-          const tradeNameEl = node.querySelector(".product-title, .title, .name, h3, h5, .product-name");
-          const tradeName = tradeNameEl?.textContent?.trim() || "";
-          
-          const genericEl = node.querySelector(".active_substance, .generic, .inn");
-          const genericName = genericEl?.textContent?.trim() || "";
-          
-          const priceEl = node.querySelector(".price, .product-price, .item-price");
-          let priceNum: number | undefined = undefined;
-          if (priceEl) {
-            const priceText = priceEl.textContent || "";
-            const matchedPrice = priceText.replace(/[^\d.]/g, "");
-            if (matchedPrice) priceNum = parseFloat(matchedPrice);
-          }
-
-          const formEl = node.querySelector(".form, .type, .product-form");
-          const dosageForm = formEl?.textContent?.trim() || "Tablet";
-
-          const linkEl = node.querySelector("a[href]") as HTMLAnchorElement | null;
-          const detailUrl = linkEl?.getAttribute("href") || "";
-
-          if (tradeName) {
-            items.push({
-              tradeName,
-              genericName: genericName || "",
-              dosageForm,
-              price: priceNum,
-              source: "PSP",
-              detailUrl
-            });
-          }
-        });
-      }
-
-      const uniqueItems = items.filter((item, index, self) =>
-        index === self.findIndex((t) => t.tradeName === item.tradeName)
-      );
+      const uniqueItems = Array.isArray(data.items) ? data.items : [];
 
       if (uniqueItems.length > 0) {
         setSyncResults(uniqueItems.slice(0, 8));
@@ -429,55 +348,11 @@ export default function App() {
     return `მოქმედებს როგორც ${group || 'ფარმაკოლოგიური საშუალება'}, თერაპიული ეფექტი დაკავშირებულია სპეციფიკურ რეცეპტორულ აქტივობასთან კლინიკურ დონეზე.`;
   };
 
-  // Fetches the real annotation (ჩვენებები / გვერდითი მოვლენები / მოქმედების
-  // მექანიზმი) from the medication's own page on Aversi/PSP via the backend
-  // extraction endpoint. Returns null if there's no link to follow or the
-  // fetch/extraction didn't find anything usable.
-  const fetchMedicationDetail = async (item: any): Promise<Record<string, string> | null> => {
-    if (!item.detailUrl) return null;
-    try {
-      const sourceParam = item.source === "Aversi" ? "aversi" : "psp";
-      const res = await fetch(`/api/med-detail?source=${sourceParam}&url=${encodeURIComponent(item.detailUrl)}`);
-      if (!res.ok) return null;
-      const data = await res.json();
-      const { indications, sideEffects, mechanismOfAction, contraindications, dosage } = data;
-      if (!indications && !sideEffects && !mechanismOfAction) return null;
-      return { indications, sideEffects, mechanismOfAction, contraindications, dosage };
-    } catch (err) {
-      console.warn("Could not fetch medication detail page:", err);
-      return null;
-    }
-  };
-
-  const applySyncResult = async (item: any, idx?: number) => {
+  const applySyncResult = (item: any) => {
     setTradeName(item.tradeName);
     setGenericName(item.genericName);
     if (item.price) setPrice(item.price);
     setSource(item.source || "Custom");
-
-    if (typeof idx === "number") setDetailLoadingIdx(idx);
-    const detail = await fetchMedicationDetail(item);
-    if (typeof idx === "number") setDetailLoadingIdx(null);
-
-    if (detail) {
-      // Real annotation text pulled from the pharmacy's own product page.
-      setPharmacologicalGroup(item.pharmacologicalGroup || "");
-      setRoute(item.route || "PO");
-      setDosageForm(item.dosageForm || "Tablet");
-      setFrequency(item.frequency || "1x");
-      setMealConnection(item.mealConnection || "Independent");
-      setTimesOfDay(item.timeOfDay || ["Morning"]);
-      setIndicationsStr(detail.indications || "");
-      setSideEffects(detail.sideEffects || "");
-      setMechanismOfAction(detail.mechanismOfAction || getMechanismOfActionByGeneric(item.genericName, item.pharmacologicalGroup || ""));
-      if (detail.contraindications) {
-        setClinicalPearls(prev => prev || detail.contraindications || "");
-      }
-      setAdditionalInfo(item.additionalInfo || "");
-      setSelectedDepts(item.classificationDepartment || ["General"]);
-      setSyncMessage({ text: `${item.tradeName} — ანოტაცია წამოღებულია ${item.source} გვერდიდან`, type: "success" });
-      return;
-    }
 
     if (item.pharmacologicalGroup || item.route || item.indications) {
       setPharmacologicalGroup(item.pharmacologicalGroup || "");
@@ -2045,8 +1920,8 @@ export default function App() {
                         {syncResults.map((result, idx) => (
                           <div
                             key={idx}
-                            onClick={() => applySyncResult(result, idx)}
-                            className={`p-2.5 bg-white/5 hover:bg-[#6b111a]/20 rounded-xl border border-white/5 cursor-pointer transition-all flex justify-between items-center group text-left ${detailLoadingIdx === idx ? "opacity-60 pointer-events-none" : ""}`}
+                            onClick={() => applySyncResult(result)}
+                            className="p-2.5 bg-white/5 hover:bg-[#6b111a]/20 rounded-xl border border-white/5 cursor-pointer transition-all flex justify-between items-center group text-left"
                           >
                             <div>
                               <p className="text-xs font-bold text-white group-hover:text-rose-300">{result.tradeName}</p>
@@ -2055,7 +1930,7 @@ export default function App() {
                               )}
                             </div>
                             <span className="text-[10px] bg-rose-950/40 text-rose-300 border border-rose-900/30 px-2 py-0.5 rounded font-bold">
-                              {detailLoadingIdx === idx ? "იტვირთება..." : (result.source || "PSP")}
+                              {result.source || "PSP"}
                             </span>
                           </div>
                         ))}
