@@ -1,6 +1,0 @@
-{
-  "name": "კლინიკური ასისტენტი (CDSS)",
-  "description": "კლინიკური გადაწყვეტილების მხარდამჭერი სისტემა გადაუდებელი მედიცინისა და ენდოკრინოლოგიისთვის",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
