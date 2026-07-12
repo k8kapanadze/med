@@ -1,6 +1,19 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+let genAIClient: GoogleGenerativeAI | null = null;
+function getGenAIClient() {
+  if (!genAIClient) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY is not configured. Please add GEMINI_API_KEY in the Secrets / Environment panel.");
+    }
+    genAIClient = new GoogleGenerativeAI(apiKey);
+  }
+  return genAIClient;
+}
 
 async function startServer() {
   const app = express();
@@ -14,6 +27,58 @@ async function startServer() {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
     next();
+  });
+
+  // Gemini Med Detail Autocomplete Endpoint (mirrors /api/med-detail.ts used on Vercel)
+  app.get("/api/med-detail", async (req, res) => {
+    try {
+      const query = req.query.query || req.query.name;
+      if (!query || typeof query !== "string") {
+        return res.status(400).json({ error: "Query or name parameter is required." });
+      }
+
+      console.log(`[Gemini Med Detail] Querying for: ${query}`);
+      const genAI = getGenAIClient();
+
+      const model = genAI.getGenerativeModel({
+        model: "gemini-1.5-flash",
+        generationConfig: {
+          responseMimeType: "application/json",
+        },
+        systemInstruction:
+          "შენ ხარ გამოცდილი კლინიკური ფარმაკოლოგი (expert clinical pharmacologist). " +
+          "მომხმარებელი მოგცემს მედიკამენტის სახელს. შენ უნდა უპასუხო მხოლოდ ვალიდური, " +
+          "დამუშავებადი JSON ობიექტით — არანაირი დამატებითი ტექსტი, ახსნა, ან Markdown " +
+          "ფორმატირება (არანაირი ```json ბლოკი). JSON ობიექტს უნდა ჰქონდეს ზუსტად ეს " +
+          "სამი გასაღები: \"indications\" (ჩვენებები), \"sideEffects\" (გვერდითი მოვლენები), " +
+          "\"mechanism\" (მოქმედების მექანიზმი). ყველა მნიშვნელობა დაწერე პროფესიულ, " +
+          "კლინიკურ ქართულ ენაზე, მკაფიო და ზუსტი სამედიცინო ტერმინოლოგიით.",
+      });
+
+      const result = await model.generateContent(
+        `მედიკამენტი: ${query.trim()}\n\nდააბრუნე ინფორმაცია ამ მედიკამენტის შესახებ ზემოთ აღწერილი JSON ფორმატით.`
+      );
+
+      const responseText = result.response.text();
+      if (!responseText) {
+        throw new Error("Empty response from Gemini.");
+      }
+
+      let parsedJson: any;
+      try {
+        parsedJson = JSON.parse(responseText);
+      } catch {
+        const cleaned = responseText.replace(/```json|```/g, "").trim();
+        parsedJson = JSON.parse(cleaned);
+      }
+
+      return res.json(parsedJson);
+    } catch (err: any) {
+      console.error("[Gemini Med Detail] Error:", err);
+      return res.status(500).json({
+        error: err.message || "სერვერის შეცდომა მონაცემების მიღებისას."
+      });
+    }
   });
 
   // Proxy for Aversi

@@ -223,6 +223,7 @@ export default function App() {
   const [timesOfDay, setTimesOfDay] = useState<TimeOfDay[]>([]);
   const [indicationsStr, setIndicationsStr] = useState("");
   const [contraindications, setContraindications] = useState<string[]>([]);
+  const [customContraInput, setCustomContraInput] = useState("");
   const [sideEffects, setSideEffects] = useState("");
   const [clinicalPearls, setClinicalPearls] = useState("");
   const [mechanismOfAction, setMechanismOfAction] = useState("");
@@ -400,7 +401,7 @@ export default function App() {
     };
   };
 
-  const generateMockMedication = (query: string, sourceName: "Aversi" | "PSP"): any => {
+  const generateMockMedication = (query: string, sourceName: string): any => {
     const term = query.trim();
     const queryLower = term.toLowerCase();
     
@@ -542,155 +543,64 @@ export default function App() {
     const term = pharmacyQuery.trim();
 
     try {
-      const targetUrl = pharmacySource === "aversi" 
-        ? `https://www.aversi.ge/ka/medikamentebi?search=${encodeURIComponent(term)}` 
-        : `https://psp.ge/ka/search?q=${encodeURIComponent(term)}`;
-
-      const url = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-
-      const response = await fetch(url);
+      // Query our backend endpoint that calls Gemini (gemini-1.5-flash)
+      const response = await fetch(`/api/med-detail?query=${encodeURIComponent(term)}`);
       if (!response.ok) {
-        throw new Error(`შეცდომა კავშირისას: ${response.status}`);
+        const errorJson = await response.json().catch(() => ({}));
+        throw new Error(errorJson.error || `სერვერის შეცდომა: ${response.status}`);
       }
 
       const data = await response.json();
-      const htmlText = data.contents;
-      if (!htmlText) {
-        throw new Error("HTML content is empty or null from proxy");
-      }
-
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(htmlText, "text/html");
       
-      // 1. Find main description container to extract details
-      const descriptionContainer = doc.querySelector(".description, .product-description, .product-details, .tab-content, #description, #product-details, .med-description, .product_description, .full-description, .characteristics, [class*='description'], [class*='detail'], [class*='info'], [id*='description'], [id*='details'], .product-tabs, .tab-pane") || doc.querySelector("main") || doc.body;
-      const rawText = descriptionContainer?.textContent || doc.body?.textContent || htmlText || "";
-      const cleanFullText = rawText.split('\n').map((line: string) => line.trim()).filter(Boolean).join('\n');
+      const formattedTradeName = term.charAt(0).toUpperCase() + term.slice(1);
       
-      // 2. Run Smart text-extraction logic
-      const scrapedDetails = parseTextDetails(cleanFullText);
-
-      const items: any[] = [];
-
-      if (pharmacySource === "aversi") {
-        let productNodes = doc.querySelectorAll(".product-layout, .product-thumb, .item, .product-item, .med-item");
-        if (productNodes.length === 0) {
-          productNodes = doc.querySelectorAll("[class*='product'], [class*='card'], .product-name, h1, h2, h3");
-        }
-        
-        productNodes.forEach(node => {
-          const tradeNameEl = node.querySelector(".name, .title, h1, h2, h3, h4, h5, a.name, .product-name, [class*='name']");
-          const tradeName = tradeNameEl?.textContent?.trim() || (node.tagName.startsWith('H') || node.classList.contains('product-name') ? node.textContent?.trim() : "") || "";
-          
-          const genericEl = node.querySelector(".inn, .generic, .composition, .subtitle, [class*='generic'], [class*='substance']");
-          const genericName = genericEl?.textContent?.trim() || "";
-          
-          const priceEl = node.querySelector(".price, .price-new, .med-price, [class*='price']");
-          let priceNum: number | undefined = undefined;
-          if (priceEl) {
-            const priceText = priceEl.textContent || "";
-            const matchedPrice = priceText.replace(/[^\d.]/g, "");
-            if (matchedPrice) priceNum = parseFloat(matchedPrice);
-          }
-
-          const formEl = node.querySelector(".form, .dosage, .type, .med-form, [class*='form']");
-          const dosageForm = formEl?.textContent?.trim() || "Tablet";
-
-          if (tradeName && tradeName.length > 2 && tradeName.length < 100) {
-            items.push({
-              tradeName,
-              genericName: genericName || "",
-              dosageForm,
-              price: priceNum,
-              source: "Aversi",
-              // Attach smart scraped properties
-              indications: scrapedDetails.indications,
-              sideEffects: scrapedDetails.sideEffects,
-              contraindications: scrapedDetails.contraindications,
-              mechanismOfAction: scrapedDetails.mechanismOfAction,
-              clinicalPearls: scrapedDetails.clinicalPearls,
-              pharmacologicalGroup: scrapedDetails.pharmacologicalGroup || "სხვა"
-            });
-          }
-        });
-      } else {
-        let productNodes = doc.querySelectorAll(".product-layout, .product-item, .item, .product-box, .product_box");
-        if (productNodes.length === 0) {
-          productNodes = doc.querySelectorAll("[class*='product'], [class*='card'], .product-name, h1, h2, h3");
-        }
-        
-        productNodes.forEach(node => {
-          const tradeNameEl = node.querySelector(".product-title, .title, .name, h1, h2, h3, h4, h5, .product-name, [class*='name']");
-          const tradeName = tradeNameEl?.textContent?.trim() || (node.tagName.startsWith('H') || node.classList.contains('product-name') ? node.textContent?.trim() : "") || "";
-          
-          const genericEl = node.querySelector(".active_substance, .generic, .inn, [class*='generic'], [class*='substance']");
-          const genericName = genericEl?.textContent?.trim() || "";
-          
-          const priceEl = node.querySelector(".price, .product-price, .item-price, [class*='price']");
-          let priceNum: number | undefined = undefined;
-          if (priceEl) {
-            const priceText = priceEl.textContent || "";
-            const matchedPrice = priceText.replace(/[^\d.]/g, "");
-            if (matchedPrice) priceNum = parseFloat(matchedPrice);
-          }
-
-          const formEl = node.querySelector(".form, .type, .product-form, [class*='form']");
-          const dosageForm = formEl?.textContent?.trim() || "Tablet";
-
-          if (tradeName && tradeName.length > 2 && tradeName.length < 100) {
-            items.push({
-              tradeName,
-              genericName: genericName || "",
-              dosageForm,
-              price: priceNum,
-              source: "PSP",
-              // Attach smart scraped properties
-              indications: scrapedDetails.indications,
-              sideEffects: scrapedDetails.sideEffects,
-              contraindications: scrapedDetails.contraindications,
-              mechanismOfAction: scrapedDetails.mechanismOfAction,
-              clinicalPearls: scrapedDetails.clinicalPearls,
-              pharmacologicalGroup: scrapedDetails.pharmacologicalGroup || "სხვა"
-            });
-          }
-        });
+      let indicationsArray: string[] = [];
+      if (Array.isArray(data.indications)) {
+        indicationsArray = data.indications;
+      } else if (typeof data.indications === "string") {
+        indicationsArray = data.indications.split(/[,;\n]+/).map((i: string) => i.trim()).filter(Boolean);
       }
+      
+      const syncResultItem = {
+        tradeName: formattedTradeName,
+        genericName: formattedTradeName,
+        price: 5.50,
+        source: "Gemini AI Clinical DB",
+        indications: indicationsArray.length > 0 ? indicationsArray : ["ინფორმაცია არ არის მითითებული"],
+        sideEffects: data.sideEffects || "ინფორმაცია არ არის მითითებული",
+        mechanismOfAction: data.mechanism || data.mechanismOfAction || "ინფორმაცია არ არის მითითებული",
+        clinicalPearls: "ინფორმაცია მოძიებულია და გენერირებულია AI კლინიკური ასისტენტის მიერ.",
+        pharmacologicalGroup: "კლინიკური კლასი",
+        route: "PO" as any,
+        dosageForm: "Tablet" as any,
+        frequency: "1x" as any,
+        mealConnection: "Independent" as any,
+        timeOfDay: ["Morning"],
+        contraindications: []
+      };
 
-      const uniqueItems = items.filter((item, index, self) =>
-        index === self.findIndex((t) => t.tradeName === item.tradeName)
-      );
+      setSyncResults([syncResultItem]);
+      applySyncResult(syncResultItem);
 
-      if (uniqueItems.length > 0) {
-        const topResults = uniqueItems.slice(0, 8);
-        setSyncResults(topResults);
-        
-        const firstMatch = topResults[0];
-        applySyncResult(firstMatch);
-
-        setSyncMessage({
-          text: `🔄 სინქრონიზაცია წარმატებულია! ავტომატურად შეივსო "${firstMatch.tradeName}" (${firstMatch.price ? firstMatch.price + ' ₾' : 'ფასი არ არის მითითებული'}) ${pharmacySource.toUpperCase()}-ს ბაზიდან`,
-          type: "success"
-        });
-        setIsSyncLoading(false);
-      } else {
-        throw new Error("No products matched the search on pharmacy page");
-      }
-    } catch (err: any) {
-      console.warn("Live scraper failed, triggering 1-second simulated delay fallback:", err);
       setSyncMessage({
-        text: `⏳ კავშირი ვერ დამყარდა (Cloudflare/CORS ბლოკი). მიმდინარეობს ძიების სიმულაცია ${pharmacySource.toUpperCase()}-ს ბაზაში...`,
+        text: `✨ სინქრონიზაცია წარმატებულია! ავტომატურად შეივსო "${formattedTradeName}" Gemini AI კლინიკური ბაზიდან.`,
+        type: "success"
+      });
+      setIsSyncLoading(false);
+    } catch (err: any) {
+      console.warn("Gemini sync failed, triggering local fallback simulation:", err);
+      setSyncMessage({
+        text: `⚠️ კავშირი ვერ დამყარდა: ${err.message || "კავშირის პრობლემა"}. მიმდინარეობს ძიების სიმულაცია ლოკალურ ბაზაში...`,
         type: "info"
       });
 
       setTimeout(() => {
-        const sourceName = pharmacySource === "aversi" ? "Aversi" : "PSP";
-        const mockItem = generateMockMedication(term, sourceName);
-        
+        const mockItem = generateMockMedication(term, "Local DB");
         setSyncResults([mockItem]);
         applySyncResult(mockItem);
 
         setSyncMessage({
-          text: `✨ სიმულაცია წარმატებულია: ავტომატურად შეივსო "${mockItem.tradeName}" (${mockItem.price} ₾) ${sourceName}-ს ბაზიდან!`,
+          text: `✨ სიმულაცია წარმატებულია: ავტომატურად შეივსო "${mockItem.tradeName}" ლოკალური შაბლონით.`,
           type: "success"
         });
         setIsSyncLoading(false);
@@ -1895,6 +1805,23 @@ export default function App() {
                     </div>
 
                     <div className="max-h-48 overflow-y-auto divide-y divide-white/5">
+                      {diseaseSearchText.trim().length > 0 && !DISEASE_PRESETS.some(d => d.name.toLowerCase() === diseaseSearchText.trim().toLowerCase()) && (
+                        <div
+                          onClick={() => {
+                            const trimmed = diseaseSearchText.trim();
+                            if (!patientDiseases.includes(trimmed)) {
+                              setPatientDiseases([...patientDiseases, trimmed]);
+                            }
+                            setIsDiseaseDropdownOpen(false);
+                            setDiseaseSearchText("");
+                          }}
+                          className="px-4 py-2.5 text-xs text-rose-400 font-bold hover:bg-[#6b111a]/20 hover:text-white cursor-pointer transition-all flex items-center justify-between"
+                        >
+                          <span>➕ ახალი დაავადების დამატება: "{diseaseSearchText.trim()}"</span>
+                          <Plus className="h-3.5 w-3.5 text-rose-400" />
+                        </div>
+                      )}
+
                       {filteredDiseasePresets.length > 0 ? (
                         filteredDiseasePresets.map((disease) => (
                           <div
@@ -1913,9 +1840,11 @@ export default function App() {
                           </div>
                         ))
                       ) : (
-                        <div className="px-4 py-3 text-xs text-slate-500 text-center">
-                          ყველა დაავადება არჩეულია
-                        </div>
+                        diseaseSearchText.trim().length === 0 && (
+                          <div className="px-4 py-3 text-xs text-slate-500 text-center">
+                            ყველა დაავადება არჩეულია
+                          </div>
+                        )
                       )}
                     </div>
                   </motion.div>
@@ -2901,7 +2830,7 @@ export default function App() {
                     {editingMed ? "მედიკამენტის რედაქტირება" : "ახალი მედიკამენტის დამატება კატალოგში"}
                   </h3>
                   <p className="text-[10px] text-slate-400 mt-0.5">
-                    შეავსეთ ველები ან გამოიყენეთ ფარმაციის ცოცხალი სინქრონიზატორი
+                    შეავსეთ ველები ან გამოიყენეთ AI კლინიკური სინქრონიზატორი
                   </p>
                 </div>
                 <button
@@ -2916,12 +2845,12 @@ export default function App() {
               {/* Scrollable form body */}
               <div className="p-6 overflow-y-auto max-h-[70vh] space-y-6">
                 
-                {/* 1. Live Web API Scraper integration widget */}
+                {/* 1. Live Gemini Clinical Sync integration widget */}
                 <div className="p-5 rounded-2xl bg-slate-950 border border-white/5 space-y-4">
                   <div className="flex items-center space-x-2">
                     <RefreshCw className={`h-4.5 w-4.5 text-[#e04556] ${isSyncLoading ? 'animate-spin' : ''}`} />
                     <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                      ფარმაციის ცოცხალი სინქრონიზაცია (PSP / Aversi Scraper)
+                      AI კლინიკური სინქრონიზაცია (Gemini Smart Knowledge Base)
                     </h4>
                   </div>
 
@@ -2929,7 +2858,7 @@ export default function App() {
                     <div className="flex-1 relative">
                       <input
                         type="text"
-                        placeholder="ჩაწერეთ პრეპარატი (მაგ: ნუროფენი, დექსამეთაზონი...)"
+                        placeholder="ჩაწერეთ პრეპარატი (მაგ: ნუროფენი, დექსამეთაზონი, Captopril...)"
                         value={pharmacyQuery}
                         onChange={(e) => setPharmacyQuery(e.target.value)}
                         onKeyDown={(e) => {
@@ -2943,15 +2872,6 @@ export default function App() {
                     </div>
 
                     <div className="flex space-x-2">
-                      <select
-                        value={pharmacySource}
-                        onChange={(e) => setPharmacySource(e.target.value as any)}
-                        className="bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
-                      >
-                        <option value="psp">PSP Pharmacy</option>
-                        <option value="aversi">Aversi Pharmacy</option>
-                      </select>
-
                       <button
                         type="button"
                         onClick={triggerPharmacySync}
@@ -3190,9 +3110,10 @@ export default function App() {
                   </div>
 
                   {/* Active DDI Contraindications flags */}
-                  <div className="space-y-2 pt-1">
+                  <div className="space-y-3 pt-1">
                     <label className="text-xs text-slate-300 font-bold block">კლინიკური უკუჩვენებები (Contraindication matching triggers)</label>
                     <div className="flex flex-wrap gap-2">
+                      {/* Preset items */}
                       {["Diabetes", "CKD", "Pregnancy", "Penicillin Allergy", "Liver Failure", "Hypertension"].map(item => {
                         const isSelected = contraindications.includes(item);
                         return (
@@ -3202,7 +3123,7 @@ export default function App() {
                             onClick={() => toggleContraindication(item)}
                             className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
                               isSelected
-                                ? "bg-rose-950 text-rose-400 border-rose-900/60 font-bold"
+                                ? "bg-rose-950 text-rose-400 border-rose-900/60 font-bold shadow-sm"
                                 : "bg-slate-900 text-slate-400 border-white/10 hover:bg-white/5 hover:text-white"
                             }`}
                           >
@@ -3211,6 +3132,55 @@ export default function App() {
                           </button>
                         );
                       })}
+
+                      {/* Custom items */}
+                      {contraindications
+                        .filter(item => !["Diabetes", "CKD", "Pregnancy", "Penicillin Allergy", "Liver Failure", "Hypertension"].includes(item))
+                        .map(item => (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => toggleContraindication(item)}
+                            className="px-3 py-1.5 rounded-xl text-xs font-bold border bg-rose-950 text-rose-300 border-rose-900/60 hover:border-rose-700/80 transition-all cursor-pointer flex items-center space-x-1.5 shadow-sm"
+                          >
+                            <span>🚨 უკუნაჩვენებია: {item}</span>
+                            <span className="text-rose-400 font-extrabold hover:text-rose-200 text-[10px]">✕</span>
+                          </button>
+                        ))}
+                    </div>
+
+                    {/* Custom Contraindication Input Form */}
+                    <div className="flex items-center gap-2 mt-1 max-w-md">
+                      <input
+                        type="text"
+                        placeholder="ჩაწერეთ სხვა კლინიკური უკუჩვენება... (მაგ: ასთმა, G6PD, ალკოჰოლი)"
+                        value={customContraInput}
+                        onChange={(e) => setCustomContraInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            const val = customContraInput.trim();
+                            if (val && !contraindications.includes(val)) {
+                              setContraindications([...contraindications, val]);
+                            }
+                            setCustomContraInput("");
+                          }
+                        }}
+                        className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6b111a]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = customContraInput.trim();
+                          if (val && !contraindications.includes(val)) {
+                            setContraindications([...contraindications, val]);
+                          }
+                          setCustomContraInput("");
+                        }}
+                        className="px-3.5 py-2 bg-[#6b111a]/20 border border-[#6b111a]/40 hover:bg-[#6b111a]/40 text-rose-300 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer focus:outline-none flex-shrink-0"
+                      >
+                        დამატება
+                      </button>
                     </div>
                   </div>
 
@@ -3457,7 +3427,7 @@ export default function App() {
                     <div className="flex flex-wrap gap-2">
                       {viewingMed.contraindications.map((c, i) => (
                         <span key={i} className="text-xs bg-rose-500/10 border border-rose-500/20 text-rose-300 px-2.5 py-1 rounded-xl font-medium">
-                          {c === "Diabetes" ? "დიაბეტი" : c === "CKD" ? "თირკმლის უკმარ." : c === "Pregnancy" ? "ორსულობა/ლაქტაცია" : c === "Penicillin Allergy" ? "პენიცილინის ალერგია" : c === "Liver Failure" ? "ღვიძლის უკმარ." : "არტერიული ჰიპერტენზია"}
+                          {c === "Diabetes" ? "დიაბეტი" : c === "CKD" ? "თირკმლის უკმარ." : c === "Pregnancy" ? "ორსულობა/ლაქტაცია" : c === "Penicillin Allergy" ? "პენიცილინის ალერგია" : c === "Liver Failure" ? "ღვიძლის უკმარ." : c === "Hypertension" ? "არტერიული ჰიპერტენზია" : c}
                         </span>
                       ))}
                     </div>

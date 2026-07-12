@@ -1,119 +1,84 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import * as cheerio from "cheerio";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
-/**
- * GET /api/med-detail?url=https://www.aversi.ge/...
- *
- * Fetches a pharmacy product page through ScraperAPI (which handles
- * Cloudflare's JS challenge / CAPTCHA on our behalf) instead of hitting
- * the target site directly, then extracts the relevant fields with Cheerio.
- */
-
-const SCRAPER_API_ENDPOINT = "https://api.scraperapi.com";
-
-// Keeps Georgian (Mkhedruli) text intact while stripping stray whitespace/noise.
-const GEORGIAN_TEXT_REGEX = /[^\u10A0-\u10FF\u0020-\u007E\u00A0-\u00FF0-9%.,/-]+/g;
-
-function cleanText(raw: string): string {
-  return raw
-    .replace(GEORGIAN_TEXT_REGEX, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+// Lazily instantiate so a missing key throws a clean, catchable error
+// instead of crashing at module load time.
+let genAIClient: GoogleGenerativeAI | null = null;
+function getGenAIClient(): GoogleGenerativeAI {
+  if (!genAIClient) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error(
+        "GEMINI_API_KEY is not configured. Add it in Vercel > Project > Settings > Environment Variables."
+      );
+    }
+    genAIClient = new GoogleGenerativeAI(apiKey);
+  }
+  return genAIClient;
 }
 
-interface MedDetailResult {
-  source: string;
-  name: string | null;
-  price: string | null;
-  availability: string | null;
-  rawTitle: string | null;
-}
+export default async function handler(req: any, res: any) {
+  // CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
 
-async function fetchViaScraperApi(targetUrl: string): Promise<string> {
-  const apiKey = process.env.SCRAPER_API_KEY;
-
-  if (!apiKey) {
-    throw new Error("SCRAPER_API_KEY is not configured in environment variables.");
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
   }
 
-  const proxyUrl = new URL(SCRAPER_API_ENDPOINT);
-  proxyUrl.searchParams.set("api_key", apiKey);
-  proxyUrl.searchParams.set("url", targetUrl);
-  // render=true asks ScraperAPI to run a real headless browser, which is
-  // usually required to clear Cloudflare's JS challenge.
-  proxyUrl.searchParams.set("render", "true");
-  proxyUrl.searchParams.set("country_code", "ge");
-
-  const response = await fetch(proxyUrl.toString(), {
-    method: "GET",
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `ScraperAPI request failed with status ${response.status}: ${response.statusText}`
-    );
-  }
-
-  return response.text();
-}
-
-function parseMedPage(html: string, source: string): MedDetailResult {
-  const $ = cheerio.load(html);
-
-  const rawTitle = $("title").first().text() || null;
-
-  // NOTE: these selectors are placeholders — inspect the real Aversi/PSP
-  // product page DOM and swap in the actual class/id names before relying
-  // on this in production.
-  const name = cleanText(
-    $("h1.product-title, .product-name, h1").first().text()
-  ) || null;
-
-  const price = cleanText(
-    $(".price, .product-price, [data-price]").first().text()
-  ) || null;
-
-  const availabilityRaw = cleanText(
-    $(".availability, .stock-status, .in-stock").first().text()
-  );
-
-  return {
-    source,
-    name,
-    price,
-    availability: availabilityRaw || null,
-    rawTitle,
-  };
-}
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  const targetUrl = req.query.url as string | undefined;
-
-  if (!targetUrl) {
-    return res.status(400).json({ error: "Missing required 'url' query parameter." });
-  }
-
-  let source: string;
-  try {
-    source = new URL(targetUrl).hostname;
-  } catch {
-    return res.status(400).json({ error: "The 'url' parameter is not a valid URL." });
+    return res.status(405).json({ error: "Method not allowed. Use GET." });
   }
 
   try {
-    const html = await fetchViaScraperApi(targetUrl);
-    const result = parseMedPage(html, source);
-    return res.status(200).json(result);
+    const query = (req.query?.query || req.query?.name) as string | undefined;
+
+    if (!query || typeof query !== "string" || !query.trim()) {
+      return res.status(400).json({ error: "Query or name parameter is required." });
+    }
+
+    console.log(`[Gemini Med Detail] Querying for: ${query}`);
+
+    const genAI = getGenAIClient();
+
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      generationConfig: {
+        responseMimeType: "application/json",
+      },
+      systemInstruction:
+        "შენ ხარ გამოცდილი კლინიკური ფარმაკოლოგი (expert clinical pharmacologist). " +
+        "მომხმარებელი მოგცემს მედიკამენტის სახელს. შენ უნდა უპასუხო მხოლოდ ვალიდური, " +
+        "დამუშავებადი JSON ობიექტით — არანაირი დამატებითი ტექსტი, ახსნა, ან Markdown " +
+        "ფორმატირება (არანაირი ```json ბლოკი). JSON ობიექტს უნდა ჰქონდეს ზუსტად ეს " +
+        "სამი გასაღები: \"indications\" (ჩვენებები), \"sideEffects\" (გვერდითი მოვლენები), " +
+        "\"mechanism\" (მოქმედების მექანიზმი). ყველა მნიშვნელობა დაწერე პროფესიულ, " +
+        "კლინიკურ ქართულ ენაზე, მკაფიო და ზუსტი სამედიცინო ტერმინოლოგიით.",
+    });
+
+    const result = await model.generateContent(
+      `მედიკამენტი: ${query.trim()}\n\nდააბრუნე ინფორმაცია ამ მედიკამენტის შესახებ ზემოთ აღწერილი JSON ფორმატით.`
+    );
+
+    const responseText = result.response.text();
+
+    if (!responseText) {
+      throw new Error("Empty response from Gemini.");
+    }
+
+    let parsedJson: any;
+    try {
+      parsedJson = JSON.parse(responseText);
+    } catch {
+      // Defensive fallback in case the model wraps the JSON in a code fence
+      const cleaned = responseText.replace(/```json|```/g, "").trim();
+      parsedJson = JSON.parse(cleaned);
+    }
+
+    return res.status(200).json(parsedJson);
   } catch (err: any) {
-    console.error("[med-detail] Scraping failed:", err);
+    console.error("[Gemini Med Detail] Error:", err);
     return res.status(500).json({
-      error: "Scraping API failed or Cloudflare blocked the proxy.",
-      detail: err?.message ?? String(err),
+      error: err?.message || "სერვერის შეცდომა მონაცემების მიღებისას.",
     });
   }
 }
