@@ -468,7 +468,6 @@ export default function App() {
       setAdditionalInfo("");
     }
 
-    setSyncMessage({ text: `ავტომატურად შეივსო ${item.tradeName}`, type: "success" });
   };
 
   // --- Save / Add Medication ---
