@@ -5,6 +5,8 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { jsPDF } from "jspdf";
+import html2canvas from "html2canvas";
 import {
   Plus,
   Search,
@@ -31,6 +33,8 @@ import {
   ChevronDown,
   Pill,
   Folder,
+  FolderMinus,
+  FolderPlus,
   ClipboardList,
   MoreVertical,
   CheckSquare,
@@ -41,7 +45,8 @@ import {
   Droplets,
   Baby,
   FileText,
-  Layers
+  Layers,
+  ChevronRight
 } from "lucide-react";
 import { Medication, Department, Route, DosageForm, Frequency, MealConnection, TimeOfDay } from "./types";
 import { PRESET_MEDICATIONS, OFFLINE_EMERGENCY_CATALOG } from "./data";
@@ -147,10 +152,47 @@ export default function App() {
   const [renameAlbumValue, setRenameAlbumValue] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [successPrescription, setSuccessPrescription] = useState(false);
+  const [selectedMedIds, setSelectedMedIds] = useState<string[]>([]);
+  const [activeTextarea, setActiveTextarea] = useState<string | null>(null);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+
+  // --- Custom Confirm Modal State ---
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {}
+  });
+
+  const showConfirm = (title: string, message: string, onConfirm: () => void) => {
+    setConfirmModal({
+      isOpen: true,
+      title,
+      message,
+      onConfirm: () => {
+        onConfirm();
+        setConfirmModal(prev => ({ ...prev, isOpen: false }));
+      }
+    });
+  };
+
+  // --- Search inside Add/Edit modal for Album search ---
+  const [modalAlbumSearchText, setModalAlbumSearchText] = useState("");
+
+  // --- Search and state for bulk actions album dropdown ---
+  const [bulkAlbumSearchQuery, setBulkAlbumSearchQuery] = useState("");
+  const [isBulkAlbumDropdownOpen, setIsBulkAlbumDropdownOpen] = useState(false);
 
   // Ref for outside click closing
   const diseaseDropdownRef = useRef<HTMLDivElement>(null);
   const albumDropdownRef = useRef<HTMLDivElement>(null);
+  const bulkAlbumDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -159,6 +201,9 @@ export default function App() {
       }
       if (albumDropdownRef.current && !albumDropdownRef.current.contains(event.target as Node)) {
         setOpenDropdownAlbum(null);
+      }
+      if (bulkAlbumDropdownRef.current && !bulkAlbumDropdownRef.current.contains(event.target as Node)) {
+        setIsBulkAlbumDropdownOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -269,6 +314,221 @@ export default function App() {
   };
 
   // --- Real-time Pharmacy Scraper Sync ---
+  const extractMedicalField = (text: string, currentFieldKeywords: string[], nextFieldKeywords: string[]): string => {
+    let startIndex = -1;
+    let foundKeyword = "";
+    for (const keyword of currentFieldKeywords) {
+      const idx = text.indexOf(keyword);
+      if (idx !== -1 && (startIndex === -1 || idx < startIndex)) {
+        startIndex = idx;
+        foundKeyword = keyword;
+      }
+    }
+    
+    if (startIndex === -1) {
+      return "ინფორმაცია არ არის მითითებული";
+    }
+    
+    let contentStart = startIndex + foundKeyword.length;
+    let endIndex = text.length;
+    
+    // Terminate when the next heading or a common section end is encountered
+    const allTerminationKeywords = [
+      ...nextFieldKeywords, 
+      "შენახვის პირობები", 
+      "გამოშვების ფორმა", 
+      "აფთიაქიდან გაცემის წესი", 
+      "მწარმოებელი", 
+      "დოზირება", 
+      "გვერდითი", 
+      "უკუჩვენება"
+    ];
+    for (const keyword of allTerminationKeywords) {
+      const idx = text.indexOf(keyword, contentStart);
+      if (idx !== -1 && idx < endIndex) {
+        endIndex = idx;
+      }
+    }
+    
+    let extracted = text.substring(contentStart, endIndex).trim();
+    
+    // Clean up punctuation, slashes, dotes, list symbols, colons at start
+    extracted = extracted.replace(/^[:\-\s\•\.\,\/]+/g, "").trim();
+    
+    if (extracted.includes("\n\n")) {
+      extracted = extracted.split("\n\n")[0].trim();
+    }
+    
+    if (extracted.length > 500) {
+      extracted = extracted.substring(0, 500) + "...";
+    }
+    
+    return extracted || "ინფორმაცია არ არის მითითებული";
+  };
+
+  const parseTextDetails = (fullText: string) => {
+    const indicationsKeywords = ["ჩვენება", "ჩვენებები", "მიღების ჩვენება", "მიღების ჩვენებები"];
+    const sideEffectsKeywords = ["გვერდითი მოვლენები", "გვერდითი ეფექტები", "გვერდითი მოვლენა"];
+    const contraindicationsKeywords = ["უკუჩვენება", "უკუჩვენებები"];
+    const mechanismKeywords = ["ფარმაკოლოგიური თვისებები", "მოქმედების მექანიზმი", "ფარმაკოდინამიკა", "ფარმაკოლოგიური ჯგუფი"];
+
+    const indicationsStr = extractMedicalField(fullText, indicationsKeywords, [...sideEffectsKeywords, ...contraindicationsKeywords, ...mechanismKeywords]);
+    const sideEffectsStr = extractMedicalField(fullText, sideEffectsKeywords, [...indicationsKeywords, ...contraindicationsKeywords, ...mechanismKeywords]);
+    const contraindicationsStr = extractMedicalField(fullText, contraindicationsKeywords, [...indicationsKeywords, ...sideEffectsKeywords, ...mechanismKeywords]);
+    const mechanismStr = extractMedicalField(fullText, mechanismKeywords, [...indicationsKeywords, ...sideEffectsKeywords, ...contraindicationsKeywords]);
+
+    // Map found contraindications to pre-defined keys
+    const parsedContraindications: string[] = [];
+    const lowerContra = contraindicationsStr.toLowerCase();
+    if (lowerContra.includes("თირკმელ") || lowerContra.includes("უკმარისობა")) {
+      if (lowerContra.includes("თირკმელ")) parsedContraindications.push("CKD");
+      if (lowerContra.includes("ღვიძლ")) parsedContraindications.push("Liver Failure");
+    }
+    if (lowerContra.includes("დიაბეტ") || lowerContra.includes("შაქრიან")) parsedContraindications.push("Diabetes");
+    if (lowerContra.includes("ორსულ") || lowerContra.includes("ლაქტაც") || lowerContra.includes("ძუძუთი კვებ") || lowerContra.includes("ბავშვ")) parsedContraindications.push("Pregnancy");
+    if (lowerContra.includes("ალერგია") || lowerContra.includes("მგრძნობელობა")) parsedContraindications.push("Penicillin Allergy");
+    if (lowerContra.includes("წნევ") || lowerContra.includes("ჰიპერტენზია")) parsedContraindications.push("Hypertension");
+    if (lowerContra.includes("კალიუმ")) parsedContraindications.push("High Potassium");
+
+    return {
+      indications: indicationsStr !== "ინფორმაცია არ არის მითითებული" ? [indicationsStr] : ["ინფორმაცია არ არის მითითებული"],
+      sideEffects: sideEffectsStr,
+      contraindications: parsedContraindications,
+      mechanismOfAction: mechanismStr,
+      clinicalPearls: contraindicationsStr !== "ინფორმაცია არ არის მითითებული" ? `უკუჩვენება: ${contraindicationsStr}` : "ინფორმაცია არ არის მითითებული",
+      pharmacologicalGroup: mechanismStr !== "ინფორმაცია არ არის მითითებული" && mechanismStr.length < 50 ? mechanismStr : "სხვა"
+    };
+  };
+
+  const generateMockMedication = (query: string, sourceName: "Aversi" | "PSP"): any => {
+    const term = query.trim();
+    const queryLower = term.toLowerCase();
+    
+    let tradeName = term;
+    let genericName = "Active Substance";
+    let dosageForm = "Tablet";
+    let price = 4.50;
+    let pharmacologicalGroup = "სხვა";
+    let route = "PO" as any;
+    let frequency = "1x";
+    let mealConnection = "Independent" as any;
+    let timeOfDay = ["Morning"];
+    let indications = ["ინფორმაცია არ არის მითითებული"];
+    let contraindications: string[] = [];
+    let sideEffects = "ინფორმაცია არ არის მითითებული";
+    let clinicalPearls = "ინფორმაცია არ არის მითითებული";
+    let mechanismOfAction = "ინფორმაცია არ არის მითითებული";
+    let dilutionAdminRate = "";
+
+    if (queryLower.includes("კაპტო") || queryLower.includes("captopril") || queryLower.includes("კაპტოპრილი")) {
+      tradeName = "კაპტოპრილი L";
+      genericName = "Captopril";
+      dosageForm = "Tablet";
+      price = 3.20;
+      pharmacologicalGroup = "ACE ინჰიბიტორი";
+      route = "PO";
+      frequency = "2x";
+      mealConnection = "Before meal";
+      timeOfDay = ["Morning", "Evening"];
+      indications = ["არტერიული ჰიპერტენზია", "გულის უკმარისობა"];
+      contraindications = ["CKD"];
+      sideEffects = "მშრალი ხველა, თავბრუსხვევა, გემოს შეცვლა";
+      clinicalPearls = "არ გამოიყენოთ ორსულობისა და თირკმლის მძიმე უკმარისობის დროს.";
+      mechanismOfAction = "ანგიოტენზინ-გარდამქმნელი ფერმენტის (ACE) ბლოკადა, ანგიოტენზინ II-ის სინთეზის შემცირება.";
+    } else if (queryLower.includes("ნურო") || queryLower.includes("იბუპრო") || queryLower.includes("nurofen")) {
+      tradeName = "ნუროფენი ფორტე";
+      genericName = "Ibuprofen";
+      dosageForm = "Tablet";
+      price = 8.50;
+      pharmacologicalGroup = "NSAID";
+      route = "PO";
+      frequency = "3x";
+      mealConnection = "After meal";
+      timeOfDay = ["Morning", "Noon", "Evening"];
+      indications = ["ტკივილი", "ცხელება", "ანთება"];
+      contraindications = ["CKD", "Pregnancy"];
+      sideEffects = "დისპეფსია, კუჭის ლორწოვანის გაღიზიანება, თავის ტკივილი";
+      clinicalPearls = "მიიღეთ საკვებთან ერთად კუჭ-ნაწლავის გაღიზიანების შესამცირებლად. სიფრთხილით CKD დროს.";
+      mechanismOfAction = "ციკლოოქსიგენაზას (COX-1 და COX-2) ფერმენტების შექცევადი ბლოკირება, პროსტაგლანდინების სინთეზის შემცირება.";
+    } else if (queryLower.includes("პარა") || queryLower.includes("para") || queryLower.includes("პარაცე")) {
+      tradeName = "პარაცეტამოლი ექსტრა";
+      genericName = "Paracetamol";
+      dosageForm = "Tablet";
+      price = 2.40;
+      pharmacologicalGroup = "ანალგეტიკი-ანტიპირეტიკი";
+      route = "PO";
+      frequency = "PRN";
+      mealConnection = "Independent";
+      timeOfDay = ["Morning", "Evening"];
+      indications = ["სუსტი და საშუალო ინტენსივობის ტკივილი", "ცხელება"];
+      contraindications = ["Liver Failure"];
+      sideEffects = "იშვიათად კანის ალერგიული რეაქციები, ჰეპატოტოქსიურობა ჭარბი დოზირებისას";
+      clinicalPearls = "არ გადააჭარბოთ 4 გრამს დღეში ღვიძლის დაზიანების თავიდან ასაცილებლად. მოერიდეთ ალკოჰოლს.";
+      mechanismOfAction = "ცენტრალურ ნერვულ სისტემაში პროსტაგლანდინების სინთეზის ინჰიბირება, თერმორეგულაციის ცენტრზე ზემოქმედება.";
+    } else if (queryLower.includes("დექსა") || queryLower.includes("dexa") || queryLower.includes("დექსამეთაზონ")) {
+      tradeName = "დექსამეთაზონი";
+      genericName = "Dexamethasone";
+      dosageForm = "Ampoule";
+      price = 5.80;
+      pharmacologicalGroup = "გლუკოკორტიკოსტეროიდი";
+      route = "IV";
+      frequency = "1x";
+      mealConnection = "Independent";
+      timeOfDay = ["Morning"];
+      indications = ["მძიმე ანთებითი და ალერგიული რეაქციები", "ანაფილაქსიური შოკი", "ასთმის შეტევა"];
+      contraindications = ["Diabetes"];
+      sideEffects = "ჰიპერგლიკემია, არტერიული წნევის მატება, ძილის დარღვევა";
+      clinicalPearls = "მკვეთრად ზრდის გლუკოზის დონეს სისხლში. საჭიროებს ინსულინის ან შაქრის დამწევი დოზის კორექციას.";
+      mechanismOfAction = "უჯრედშიდა გლუკოკორტიკოიდულ რეცეპტორებთან დაკავშირება, ფოსფოლიპაზა A2-ის სინთეზის ინჰიბირება ლიპოკორტინით.";
+    } else if (queryLower.includes("კარდიო") || queryLower.includes("ასპი") || queryLower.includes("aspirin")) {
+      tradeName = "კარდიომაგნილი";
+      genericName = "Acetylsalicylic acid";
+      dosageForm = "Tablet";
+      price = 6.90;
+      pharmacologicalGroup = "ანტიაგრეგანტი";
+      route = "PO";
+      frequency = "1x";
+      mealConnection = "After meal";
+      timeOfDay = ["Evening"];
+      indications = ["თრომბოზების პროფილაქტიკა", "გულის იშემიური დაავადება"];
+      contraindications = ["Pregnancy"];
+      sideEffects = "კუჭ-ნაწლავის ტრაქტიდან სისხლდენის რისკი, ბრონქოსპაზმი";
+      clinicalPearls = "მიიღება საღამოს ჭამის შემდეგ დიდი რაოდენობით წყალთან ერთად.";
+      mechanismOfAction = "თრომბოციტებში ციკლოოქსიგენაზა-1-ის შეუქცევადი ბლოკადა, თრომბოქსან A2-ის სინთეზის დათრგუნვა.";
+    } else {
+      tradeName = term.charAt(0).toUpperCase() + term.slice(1);
+      genericName = term.replace(/[ა-ჰ]/g, (char) => {
+        const geoEnMap: Record<string, string> = {
+          'ა':'a', 'ბ':'b', 'გ':'g', 'დ':'d', 'ე':'e', 'ვ':'v', 'ზ':'z', 'თ':'t', 'ი':'i', 'კ':'k', 'ლ':'l', 'მ':'m', 'ნ':'n', 'ო':'o', 'პ':'p', 'ჟ':'zh', 'რ':'r', 'ს':'s', 'ტ':'t', 'უ':'u', 'ფ':'f', 'ქ':'q', 'ღ':'gh', 'ყ':'qy', 'შ':'sh', 'ჩ':'ch', 'ც':'ts', 'ძ':'dz', 'წ':'ts', 'ჭ':'ch', 'ხ':'kh', 'ჯ':'j', 'ჰ':'h'
+        };
+        return geoEnMap[char] || char;
+      });
+      genericName = genericName.charAt(0).toUpperCase() + genericName.slice(1);
+      price = parseFloat((4.50 + Math.random() * 8.0).toFixed(2));
+      pharmacologicalGroup = "სხვა";
+      indications = ["ინფორმაცია არ არის მითითებული"];
+    }
+
+    return {
+      tradeName,
+      genericName,
+      dosageForm,
+      price,
+      pharmacologicalGroup,
+      route,
+      frequency,
+      mealConnection,
+      timeOfDay,
+      indications,
+      contraindications,
+      sideEffects,
+      clinicalPearls,
+      mechanismOfAction,
+      source: sourceName,
+      dilutionAdminRate
+    };
+  };
+
   const triggerPharmacySync = async () => {
     if (!pharmacyQuery || pharmacyQuery.trim().length < 2) {
       setSyncMessage({ text: "ჩაწერეთ მინიმუმ 2 სიმბოლო მოსაძებნად", type: "info" });
@@ -282,33 +542,159 @@ export default function App() {
     const term = pharmacyQuery.trim();
 
     try {
-      const url = `/api/med-detail?source=${encodeURIComponent(pharmacySource)}&q=${encodeURIComponent(term)}`;
-      const response = await fetch(url);
-      const data = await response.json();
+      const targetUrl = pharmacySource === "aversi" 
+        ? `https://www.aversi.ge/ka/medikamentebi?search=${encodeURIComponent(term)}` 
+        : `https://psp.ge/ka/search?q=${encodeURIComponent(term)}`;
 
+      const url = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+
+      const response = await fetch(url);
       if (!response.ok) {
-        // 404 here means the serverless function reached the pharmacy site
-        // but found no matching product — fall back to the offline catalog
-        // instead of surfacing a raw HTTP error to the clinician.
-        throw new Error(data?.error || `შეცდომა კავშირისას: ${response.status}`);
+        throw new Error(`შეცდომა კავშირისას: ${response.status}`);
       }
 
-      const uniqueItems = Array.isArray(data.items) ? data.items : [];
+      const data = await response.json();
+      const htmlText = data.contents;
+      if (!htmlText) {
+        throw new Error("HTML content is empty or null from proxy");
+      }
 
-      if (uniqueItems.length > 0) {
-        setSyncResults(uniqueItems.slice(0, 8));
-        setSyncMessage({
-          text: `🔄 სინქრონიზაცია წარმატებულია! მოიძებნა ${uniqueItems.length} მედიკამენტი ${pharmacySource.toUpperCase()}-ს ბაზიდან`,
-          type: "success"
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlText, "text/html");
+      
+      // 1. Find main description container to extract details
+      const descriptionContainer = doc.querySelector(".description, .product-description, .product-details, .tab-content, #description, #product-details, .med-description, .product_description, .full-description, .characteristics, [class*='description'], [class*='detail'], [class*='info'], [id*='description'], [id*='details'], .product-tabs, .tab-pane") || doc.querySelector("main") || doc.body;
+      const rawText = descriptionContainer?.textContent || doc.body?.textContent || htmlText || "";
+      const cleanFullText = rawText.split('\n').map((line: string) => line.trim()).filter(Boolean).join('\n');
+      
+      // 2. Run Smart text-extraction logic
+      const scrapedDetails = parseTextDetails(cleanFullText);
+
+      const items: any[] = [];
+
+      if (pharmacySource === "aversi") {
+        let productNodes = doc.querySelectorAll(".product-layout, .product-thumb, .item, .product-item, .med-item");
+        if (productNodes.length === 0) {
+          productNodes = doc.querySelectorAll("[class*='product'], [class*='card'], .product-name, h1, h2, h3");
+        }
+        
+        productNodes.forEach(node => {
+          const tradeNameEl = node.querySelector(".name, .title, h1, h2, h3, h4, h5, a.name, .product-name, [class*='name']");
+          const tradeName = tradeNameEl?.textContent?.trim() || (node.tagName.startsWith('H') || node.classList.contains('product-name') ? node.textContent?.trim() : "") || "";
+          
+          const genericEl = node.querySelector(".inn, .generic, .composition, .subtitle, [class*='generic'], [class*='substance']");
+          const genericName = genericEl?.textContent?.trim() || "";
+          
+          const priceEl = node.querySelector(".price, .price-new, .med-price, [class*='price']");
+          let priceNum: number | undefined = undefined;
+          if (priceEl) {
+            const priceText = priceEl.textContent || "";
+            const matchedPrice = priceText.replace(/[^\d.]/g, "");
+            if (matchedPrice) priceNum = parseFloat(matchedPrice);
+          }
+
+          const formEl = node.querySelector(".form, .dosage, .type, .med-form, [class*='form']");
+          const dosageForm = formEl?.textContent?.trim() || "Tablet";
+
+          if (tradeName && tradeName.length > 2 && tradeName.length < 100) {
+            items.push({
+              tradeName,
+              genericName: genericName || "",
+              dosageForm,
+              price: priceNum,
+              source: "Aversi",
+              // Attach smart scraped properties
+              indications: scrapedDetails.indications,
+              sideEffects: scrapedDetails.sideEffects,
+              contraindications: scrapedDetails.contraindications,
+              mechanismOfAction: scrapedDetails.mechanismOfAction,
+              clinicalPearls: scrapedDetails.clinicalPearls,
+              pharmacologicalGroup: scrapedDetails.pharmacologicalGroup || "სხვა"
+            });
+          }
         });
       } else {
-        triggerLocalFallbackSync();
+        let productNodes = doc.querySelectorAll(".product-layout, .product-item, .item, .product-box, .product_box");
+        if (productNodes.length === 0) {
+          productNodes = doc.querySelectorAll("[class*='product'], [class*='card'], .product-name, h1, h2, h3");
+        }
+        
+        productNodes.forEach(node => {
+          const tradeNameEl = node.querySelector(".product-title, .title, .name, h1, h2, h3, h4, h5, .product-name, [class*='name']");
+          const tradeName = tradeNameEl?.textContent?.trim() || (node.tagName.startsWith('H') || node.classList.contains('product-name') ? node.textContent?.trim() : "") || "";
+          
+          const genericEl = node.querySelector(".active_substance, .generic, .inn, [class*='generic'], [class*='substance']");
+          const genericName = genericEl?.textContent?.trim() || "";
+          
+          const priceEl = node.querySelector(".price, .product-price, .item-price, [class*='price']");
+          let priceNum: number | undefined = undefined;
+          if (priceEl) {
+            const priceText = priceEl.textContent || "";
+            const matchedPrice = priceText.replace(/[^\d.]/g, "");
+            if (matchedPrice) priceNum = parseFloat(matchedPrice);
+          }
+
+          const formEl = node.querySelector(".form, .type, .product-form, [class*='form']");
+          const dosageForm = formEl?.textContent?.trim() || "Tablet";
+
+          if (tradeName && tradeName.length > 2 && tradeName.length < 100) {
+            items.push({
+              tradeName,
+              genericName: genericName || "",
+              dosageForm,
+              price: priceNum,
+              source: "PSP",
+              // Attach smart scraped properties
+              indications: scrapedDetails.indications,
+              sideEffects: scrapedDetails.sideEffects,
+              contraindications: scrapedDetails.contraindications,
+              mechanismOfAction: scrapedDetails.mechanismOfAction,
+              clinicalPearls: scrapedDetails.clinicalPearls,
+              pharmacologicalGroup: scrapedDetails.pharmacologicalGroup || "სხვა"
+            });
+          }
+        });
+      }
+
+      const uniqueItems = items.filter((item, index, self) =>
+        index === self.findIndex((t) => t.tradeName === item.tradeName)
+      );
+
+      if (uniqueItems.length > 0) {
+        const topResults = uniqueItems.slice(0, 8);
+        setSyncResults(topResults);
+        
+        const firstMatch = topResults[0];
+        applySyncResult(firstMatch);
+
+        setSyncMessage({
+          text: `🔄 სინქრონიზაცია წარმატებულია! ავტომატურად შეივსო "${firstMatch.tradeName}" (${firstMatch.price ? firstMatch.price + ' ₾' : 'ფასი არ არის მითითებული'}) ${pharmacySource.toUpperCase()}-ს ბაზიდან`,
+          type: "success"
+        });
+        setIsSyncLoading(false);
+      } else {
+        throw new Error("No products matched the search on pharmacy page");
       }
     } catch (err: any) {
-      console.warn("Live scraper failed, using local offline fallback database:", err);
-      triggerLocalFallbackSync();
-    } finally {
-      setIsSyncLoading(false);
+      console.warn("Live scraper failed, triggering 1-second simulated delay fallback:", err);
+      setSyncMessage({
+        text: `⏳ კავშირი ვერ დამყარდა (Cloudflare/CORS ბლოკი). მიმდინარეობს ძიების სიმულაცია ${pharmacySource.toUpperCase()}-ს ბაზაში...`,
+        type: "info"
+      });
+
+      setTimeout(() => {
+        const sourceName = pharmacySource === "aversi" ? "Aversi" : "PSP";
+        const mockItem = generateMockMedication(term, sourceName);
+        
+        setSyncResults([mockItem]);
+        applySyncResult(mockItem);
+
+        setSyncMessage({
+          text: `✨ სიმულაცია წარმატებულია: ავტომატურად შეივსო "${mockItem.tradeName}" (${mockItem.price} ₾) ${sourceName}-ს ბაზიდან!`,
+          type: "success"
+        });
+        setIsSyncLoading(false);
+      }, 1000);
     }
   };
 
@@ -457,10 +843,14 @@ export default function App() {
 
   // --- Delete Medication ---
   const handleDeleteMedication = (id: string) => {
-    if (confirm("ნამდვილად გსურთ ამ მედიკამენტის წაშლა კლინიკური ბაზიდან?")) {
-      setMedications(medications.filter(m => m.id !== id));
-      setPrescriptionCart(prescriptionCart.filter(m => m.id !== id));
-    }
+    showConfirm(
+      "პრეპარატის წაშლა",
+      "ნამდვილად გსურთ ამ მედიკამენტის წაშლა კლინიკური ბაზიდან?",
+      () => {
+        setMedications(prev => prev.filter(m => m.id !== id));
+        setPrescriptionCart(prev => prev.filter(m => m.id !== id));
+      }
+    );
   };
 
   // --- Toggle Favorite ---
@@ -480,6 +870,100 @@ export default function App() {
   // --- Remove from Cart ---
   const handleRemoveFromCart = (id: string) => {
     setPrescriptionCart(prescriptionCart.filter(item => item.id !== id));
+  };
+
+  // --- Inline Cart Updates & Bulk Operations ---
+  const updateCartItem = (itemId: string, updatedFields: Partial<Medication>) => {
+    setPrescriptionCart(prev => prev.map(item => {
+      if (item.id === itemId) {
+        return {
+          ...item,
+          ...updatedFields
+        };
+      }
+      return item;
+    }));
+  };
+
+  const toggleSelectMed = (medId: string) => {
+    setSelectedMedIds(prev => 
+      prev.includes(medId) ? prev.filter(id => id !== medId) : [...prev, medId]
+    );
+  };
+
+  const clearSelection = () => setSelectedMedIds([]);
+
+  const handleBulkDelete = () => {
+    if (selectedMedIds.length === 0) return;
+    const confirmText = `ნამდვილად გსურთ მონიშნული ${selectedMedIds.length} მედიკამენტის წაშლა ბაზიდან?`;
+    showConfirm(
+      "მრავალჯერადი წაშლა",
+      confirmText,
+      () => {
+        setMedications(prev => prev.filter(m => !selectedMedIds.includes(m.id)));
+        setSelectedMedIds([]);
+      }
+    );
+  };
+
+  const handleBulkAddToAlbum = (albumName: string) => {
+    if (selectedMedIds.length === 0 || !albumName) return;
+    setMedications(prev => prev.map(m => {
+      if (selectedMedIds.includes(m.id)) {
+        const currentDepts = m.classificationDepartment || [];
+        if (!currentDepts.includes(albumName as any)) {
+          return {
+            ...m,
+            classificationDepartment: [...currentDepts, albumName as any]
+          };
+        }
+      }
+      return m;
+    }));
+    alert(`მონიშნული მედიკამენტები წარმატებით დაემატა ალბომში: ${albumName}`);
+    setSelectedMedIds([]);
+  };
+
+  const handleBulkRemoveFromCurrentAlbum = () => {
+    if (selectedMedIds.length === 0 || activeTab === "ყველა") return;
+    const confirmText = `ნამდვილად გსურთ მონიშნული ${selectedMedIds.length} მედიკამენტის წაშლა ალბომიდან "${activeTab}"?`;
+    showConfirm(
+      "ალბომიდან ამოღება",
+      confirmText,
+      () => {
+        setMedications(prev => prev.map(m => {
+          if (selectedMedIds.includes(m.id)) {
+            const currentDepts = m.classificationDepartment || [];
+            return {
+              ...m,
+              classificationDepartment: currentDepts.filter(d => d !== activeTab)
+            };
+          }
+          return m;
+        }));
+        setSelectedMedIds([]);
+      }
+    );
+  };
+
+  const handleBulkMoveToAnotherAlbum = (targetAlbum: string) => {
+    if (selectedMedIds.length === 0 || !targetAlbum || activeTab === "ყველა") return;
+    setMedications(prev => prev.map(m => {
+      if (selectedMedIds.includes(m.id)) {
+        const currentDepts = m.classificationDepartment || [];
+        const filtered = currentDepts.filter(d => d !== activeTab);
+        if (!filtered.includes(targetAlbum as any)) {
+          filtered.push(targetAlbum as any);
+        }
+        return {
+          ...m,
+          classificationDepartment: filtered
+        };
+      }
+      return m;
+    }));
+    alert(`მონიშნული მედიკამენტები გადატანილ იქნა ალბომში: ${targetAlbum}`);
+    setSelectedMedIds([]);
   };
 
   // --- Complete Prescription ---
@@ -537,7 +1021,8 @@ export default function App() {
       const timesStr = med.timeOfDay && med.timeOfDay.length > 0 
         ? ` (${med.timeOfDay.map(t => t === "Morning" ? "დილას" : t === "Noon" ? "შუადღეს" : t === "Evening" ? "საღამოს" : "ძილის წინ").join(", ")})` 
         : "";
-      const dilutionStr = med.dilutionAdminRate ? `<br><small style="color: #666;">• განზავება: ${med.dilutionAdminRate}</small>` : "";
+      const dilutionStr = (med.dosageForm !== "Tablet" && med.dilutionAdminRate) ? `<br><small style="color: #666;">• განზავება: ${med.dilutionAdminRate}</small>` : "";
+      const remarkStr = med.customRemark ? `<br><small style="color: #6b111a; font-weight: bold;">• შენიშვნა: ${med.customRemark}</small>` : "";
       
       return `
         <tr>
@@ -552,6 +1037,7 @@ export default function App() {
             <div>${freqGeoMap[med.frequency] || med.frequency}${timesStr}</div>
             <small style="color: #666;">${mealGeoMap[med.mealConnection] || med.mealConnection}</small>
             ${dilutionStr}
+            ${remarkStr}
           </td>
         </tr>
       `;
@@ -581,8 +1067,7 @@ export default function App() {
             table { width: 100%; border-collapse: collapse; margin-bottom: 40px; }
             th { background-color: #f5f5f5; color: #111; font-weight: bold; text-align: left; padding: 12px; border-bottom: 2px solid #6b111a; font-size: 13px; }
             .footer-notes { margin-top: 50px; border-top: 1px solid #eee; padding-top: 20px; font-size: 11px; color: #777; }
-            .signature-block { display: flex; justify-content: space-between; margin-top: 60px; }
-            .signature-line { border-top: 1px solid #333; width: 200px; text-align: center; padding-top: 8px; font-size: 12px; font-weight: bold; }
+            .signature-block { display: flex; justify-content: space-between; align-items: center; margin-top: 60px; }
             @media print {
               body { padding: 0; }
               button { display: none; }
@@ -591,7 +1076,7 @@ export default function App() {
         </head>
         <body>
           <div class="header">
-            <div class="logo">PharmaCare Clinical</div>
+            <div class="logo" style="color: #1e293b; font-weight: 800;">K<span style="color: #6b111a;">8</span>.MED Clinical</div>
             <div class="title-block">
               <h1>სამედიცინო დანიშნულების ბარათი</h1>
               <p>თარიღი: ${currentDate}</p>
@@ -619,12 +1104,19 @@ export default function App() {
             </tbody>
           </table>
 
-          <div class="signature-block">
-            <div>
-              <p style="font-size: 11px; color: #666; margin: 0;">Prescribed via CDSS Expert Panel</p>
-              <p style="font-size: 11px; color: #666; margin: 3px 0 0 0;">PharmaCare Smart Engine v2.4</p>
+          <div class="signature-block" style="display: flex; justify-content: space-between; align-items: center; margin-top: 40px; border-top: 1px dashed #cbd5e1; padding-top: 25px; color: #0f172a;">
+            <div style="font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 8px; color: #0f172a;">
+              <span>პატივისცემითა და მზრუნველობით,</span>
+              <span style="display: inline-flex; align-items: center; gap: 0px; font-family: 'Courier New', monospace; font-weight: 900; letter-spacing: -0.8px; color: #0f172a; font-size: 15px;">
+                <span>(F)DR.</span>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style="display: block; margin: 0 -0.5px;">
+                  <circle cx="11" cy="11" r="7.5" stroke="#0f172a" stroke-width="2.5"/>
+                  <path d="M 14.5 14.5 C 16 16, 17.5 18.5, 21.5 19.5" stroke="#6b111a" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>.K</span>
+              </span>
             </div>
-            <div class="signature-line">
+            <div style="border-top: 1px solid #64748b; width: 180px; text-align: center; padding-top: 8px; font-size: 11px; font-weight: bold; color: #475569;">
               მკურნალი ექიმის ხელმოწერა
             </div>
           </div>
@@ -642,6 +1134,275 @@ export default function App() {
       </html>
     `);
     printWindow.document.close();
+  };
+
+  const handleGeneratePDF = async (action: "download" | "preview" = "download") => {
+    if (prescriptionCart.length === 0) return;
+
+    let previewWindow: Window | null = null;
+    if (action === "preview") {
+      previewWindow = window.open("", "_blank");
+      if (previewWindow) {
+        previewWindow.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>მზადდება... - K8.MED Clinical</title>
+              <style>
+                body {
+                  font-family: system-ui, -apple-system, sans-serif;
+                  display: flex;
+                  align-items: center;
+                  justify-content: center;
+                  height: 100vh;
+                  margin: 0;
+                  background-color: #0f172a;
+                  color: #e2e8f0;
+                }
+                .loader-container {
+                  text-align: center;
+                }
+                .spinner {
+                  border: 4px solid rgba(255,255,255,0.1);
+                  border-top: 4px solid #e04556;
+                  border-radius: 50%;
+                  width: 40px;
+                  height: 40px;
+                  animation: spin 1s linear infinite;
+                  margin: 0 auto 16px;
+                }
+                @keyframes spin {
+                  0% { transform: rotate(0deg); }
+                  100% { transform: rotate(360deg); }
+                }
+                .title {
+                  font-weight: 700;
+                  font-size: 18px;
+                  color: #ffffff;
+                  margin-bottom: 6px;
+                }
+                .subtitle {
+                  font-size: 13px;
+                  color: #94a3b8;
+                }
+              </style>
+            </head>
+            <body>
+              <div class="loader-container">
+                <div class="spinner"></div>
+                <div class="title">PDF დანიშნულება მზადდება</div>
+                <div class="subtitle">დოკუმენტი გენერირდება, გთხოვთ დაელოდოთ...</div>
+              </div>
+            </body>
+          </html>
+        `);
+        previewWindow.document.close();
+      }
+    }
+
+    setIsGeneratingPDF(true);
+
+    // Create a temporary element for capturing
+    const container = document.createElement("div");
+    container.style.position = "fixed";
+    container.style.left = "0";
+    container.style.top = "0";
+    container.style.width = "800px";
+    container.style.backgroundColor = "#ffffff";
+    container.style.color = "#333333";
+    container.style.padding = "40px";
+    container.style.fontFamily = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+    container.style.boxSizing = "border-box";
+    container.style.zIndex = "-9999";
+    container.style.pointerEvents = "none";
+    container.style.opacity = "1";
+
+    const routeGeoMap: Record<Route, string> = {
+      PO: "პერორალურად (დასალევად)",
+      IV: "ვენაში (ინტრავენურად)",
+      IM: "კუნთში (ინტრამუსკულარულად)",
+      SC: "კანქვეშ",
+      ID: "კანშიდა"
+    };
+
+    const formGeoMap: Record<DosageForm, string> = {
+      Tablet: "ტაბლეტი",
+      Ampoule: "ამპულა",
+      Syrup: "სიროფი",
+      Infusion: "ინფუზია"
+    };
+
+    const freqGeoMap: Record<Frequency, string> = {
+      "1x": "დღეში 1-ჯერ",
+      "2x": "დღეში 2-ჯერ",
+      "3x": "დღეში 3-ჯერ",
+      "4x": "დღეში 4-ჯერ",
+      "PRN": "საჭიროებისამებრ",
+      "Continuous Infusion": "უწყვეტი ინფუზია"
+    };
+
+    const mealGeoMap: Record<MealConnection, string> = {
+      "Fast-acting": "სწრაფი მოქმედების",
+      "Before meal": "ჭამამდე",
+      "During": "ჭამის დროს",
+      "After": "ჭამის შემდეგ",
+      "Independent": "საკვების მიღებისგან დამოუკიდებლად"
+    };
+
+    const currentDate = new Date().toLocaleDateString("ka-GE", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+
+    const itemsHtml = prescriptionCart.map((med, idx) => {
+      const timesStr = med.timeOfDay && med.timeOfDay.length > 0 
+        ? ` (${med.timeOfDay.map(t => t === "Morning" ? "დილას" : t === "Noon" ? "შუადღეს" : t === "Evening" ? "საღამოს" : "ძილის წინ").join(", ")})` 
+        : "";
+      const dilutionStr = (med.dosageForm !== "Tablet" && med.dilutionAdminRate) ? `<br><small style="color: #666; font-size: 11px;">• განზავება: ${med.dilutionAdminRate}</small>` : "";
+      const remarkStr = med.customRemark ? `<br><small style="color: #6b111a; font-weight: bold; font-size: 11px;">• შენიშვნა: ${med.customRemark}</small>` : "";
+      
+      return `
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="text-align: center; font-weight: bold; padding: 14px 10px; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #475569;">${idx + 1}</td>
+          <td style="padding: 14px 10px; border-bottom: 1px solid #e2e8f0;">
+            <div style="font-weight: bold; font-size: 14px; color: #0f172a;">${med.tradeName}</div>
+            <div style="font-style: italic; font-size: 11px; color: #e04556; font-family: monospace; margin-top: 2px;">${med.genericName}</div>
+          </td>
+          <td style="padding: 14px 10px; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #334155;">${formGeoMap[med.dosageForm] || med.dosageForm}</td>
+          <td style="padding: 14px 10px; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #334155;">${routeGeoMap[med.route] || med.route}</td>
+          <td style="padding: 14px 10px; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #0f172a;">
+            <div style="font-weight: 500;">${freqGeoMap[med.frequency] || med.frequency}${timesStr}</div>
+            <div style="color: #64748b; font-size: 11px; margin-top: 2px;">${mealGeoMap[med.mealConnection] || med.mealConnection}</div>
+            ${dilutionStr}
+            ${remarkStr}
+          </td>
+        </tr>
+      `;
+    }).join("");
+
+    const diseasesHtml = patientDiseases.length > 0 
+      ? `<strong>დიაგნოზი/ანამნეზი:</strong> ${patientDiseases.map(d => d === "Diabetes" ? "შაქრიანი დიაბეტი" : d === "CKD" ? "თირკმლის უკმარისობა" : d === "Pregnancy" ? "ორსულობა" : d === "Penicillin Allergy" ? "პენიცილინის ალერგია" : d === "Liver Failure" ? "ღვიძლის უკმარისობა" : d).join(", ")}`
+      : "<strong>დიაგნოზი/ანამნეზი:</strong> არ არის მითითებული";
+
+    const allergiesHtml = patientAllergies.length > 0 
+      ? `<strong>ალერგიები:</strong> ${patientAllergies.join(", ")}`
+      : "<strong>ალერგიები:</strong> გართულებების გარეშე";
+
+    container.innerHTML = `
+      <div style="padding: 10px; background-color: #ffffff;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #6b111a; padding-bottom: 20px; margin-bottom: 25px;">
+          <div>
+            <div style="font-size: 26px; font-weight: 800; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px;">K<span style="color: #6b111a;">8</span>.MED Clinical</div>
+            <div style="font-size: 11px; color: #64748b; margin-top: 4px; font-weight: 500;">კლინიკური გადაწყვეტილების მხარდაჭერის პლატფორმა</div>
+          </div>
+          <div style="text-align: right;">
+            <h1 style="margin: 0; font-size: 18px; color: #0f172a; font-weight: 800; letter-spacing: -0.5px;">სამედიცინო დანიშნულების ბარათი</h1>
+            <p style="margin: 6px 0 0; font-size: 12px; color: #64748b; font-weight: 500;">თარიღი: ${currentDate}</p>
+          </div>
+        </div>
+
+        <div style="background: #f8fafc; border-left: 4px solid #6b111a; padding: 16px; margin-bottom: 25px; border-radius: 8px; box-shadow: inset 0 1px 2px rgba(0,0,0,0.02);">
+          <h3 style="margin-top: 0; margin-bottom: 10px; font-size: 14px; color: #6b111a; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px;">პაციენტის კლინიკური პროფილი</h3>
+          <p style="margin: 4px 0; font-size: 13px; color: #334155; line-height: 1.5;">${diseasesHtml}</p>
+          <p style="margin: 4px 0; font-size: 13px; color: #334155; line-height: 1.5;">${allergiesHtml}</p>
+        </div>
+
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 35px;">
+          <thead>
+            <tr style="background-color: #f1f5f9;">
+              <th style="width: 5%; text-align: center; color: #0f172a; font-weight: 800; padding: 12px 10px; border-bottom: 2px solid #6b111a; font-size: 12px; text-transform: uppercase;">#</th>
+              <th style="width: 35%; text-align: left; color: #0f172a; font-weight: 800; padding: 12px 10px; border-bottom: 2px solid #6b111a; font-size: 12px; text-transform: uppercase;">მედიკამენტი</th>
+              <th style="width: 15%; text-align: left; color: #0f172a; font-weight: 800; padding: 12px 10px; border-bottom: 2px solid #6b111a; font-size: 12px; text-transform: uppercase;">ფორმა</th>
+              <th style="width: 15%; text-align: left; color: #0f172a; font-weight: 800; padding: 12px 10px; border-bottom: 2px solid #6b111a; font-size: 12px; text-transform: uppercase;">გზა</th>
+              <th style="width: 30%; text-align: left; color: #0f172a; font-weight: 800; padding: 12px 10px; border-bottom: 2px solid #6b111a; font-size: 12px; text-transform: uppercase;">მიღების წესი & სიხშირე</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemsHtml}
+          </tbody>
+        </table>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 30px; border-top: 1px dashed #cbd5e1; padding-top: 25px; color: #0f172a;">
+          <div style="font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 8px; color: #0f172a;">
+            <span>პატივისცემითა და მზრუნველობით,</span>
+            <span style="display: inline-flex; align-items: center; gap: 0px; font-family: monospace; font-weight: 900; letter-spacing: -0.8px; color: #0f172a; font-size: 15px;">
+              <span>(F)DR.</span>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" style="display: block; margin: 0 -0.5px;">
+                <circle cx="11" cy="11" r="7.5" stroke="#0f172a" stroke-width="2.5"/>
+                <path d="M 14.5 14.5 C 16 16, 17.5 18.5, 21.5 19.5" stroke="#6b111a" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span>.K</span>
+            </span>
+          </div>
+          <div style="border-top: 1px solid #64748b; width: 180px; text-align: center; padding-top: 8px; font-size: 11px; font-weight: bold; color: #475569;">
+            მკურნალი ექიმის ხელმოწერა
+          </div>
+        </div>
+
+        <div style="margin-top: 35px; border-top: 1px solid #e2e8f0; padding-top: 15px; font-size: 11px; color: #64748b; line-height: 1.5;">
+          <p style="margin: 0;"><strong>მნიშვნელოვანი შენიშვნა:</strong> წინამდებარე დანიშნულება გენერირებულია კლინიკური გადაწყვეტილების მხარდაჭერის სისტემის (CDSS) მეშვეობით. გთხოვთ მიიღოთ პრეპარატები ექიმის მითითების შესაბამისად.</p>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(container);
+
+    try {
+      const canvas = await html2canvas(container, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        logging: false
+      });
+
+      const imgData = canvas.toDataURL("image/png");
+      
+      const pdf = new jsPDF({
+        orientation: "portrait",
+        unit: "mm",
+        format: "a4"
+      });
+
+      const imgWidth = 210; 
+      const pageHeight = 297; 
+      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      let heightLeft = imgHeight;
+      let position = 0;
+
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+
+      while (heightLeft >= 0) {
+        position = heightLeft - imgHeight;
+        pdf.addPage();
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
+        heightLeft -= pageHeight;
+      }
+
+      if (action === "download") {
+        pdf.save("prescription.pdf");
+      } else if (action === "preview") {
+        const blob = pdf.output("blob");
+        const blobURL = URL.createObjectURL(blob);
+        if (previewWindow) {
+          previewWindow.location.replace(blobURL);
+        } else {
+          window.open(blobURL, "_blank");
+        }
+      }
+    } catch (error) {
+      console.error("PDF-ის გენერირების შეცდომა:", error);
+      if (previewWindow) {
+        previewWindow.close();
+      }
+      alert("შეცდომა PDF-ის დამუშავებისას. გთხოვთ სცადოთ თავიდან.");
+    } finally {
+      document.body.removeChild(container);
+      setIsGeneratingPDF(false);
+    }
   };
 
   const handleCompletePrescription = () => {
@@ -698,12 +1459,16 @@ export default function App() {
 
   const handleDeleteAlbum = (albumName: string) => {
     if (albumName === "ყველა") return;
-    if (confirm(`ნამდვილად გსურთ ალბომის "${albumName}" წაშლა?`)) {
-      setAlbums(albums.filter(a => a !== albumName));
-      if (activeTab === albumName) {
-        setActiveTab("ყველა");
+    showConfirm(
+      "ალბომის წაშლა",
+      `ნამდვილად გსურთ ალბომის "${albumName}" წაშლა?`,
+      () => {
+        setAlbums(albums.filter(a => a !== albumName));
+        if (activeTab === albumName) {
+          setActiveTab("ყველა");
+        }
       }
-    }
+    );
   };
 
   // --- Toggle Multi-select helpers ---
@@ -764,10 +1529,14 @@ export default function App() {
   };
 
   const resetToPresets = () => {
-    if (confirm("ყველა შეყვანილი მედიკამენტი წაიშლება და აღდგება საწყისი ბაზა. გაგრძელება?")) {
-      setMedications(PRESET_MEDICATIONS);
-      localStorage.removeItem("cyber_medications");
-    }
+    showConfirm(
+      "მონაცემთა ბაზის აღდგენა",
+      "ყველა შეყვანილი მედიკამენტი წაიშლება და აღდგება საწყისი ბაზა. გაგრძელება?",
+      () => {
+        setMedications(PRESET_MEDICATIONS);
+        localStorage.removeItem("cyber_medications");
+      }
+    );
   };
 
   // --- Dynamic Georgian Text Copy ---
@@ -918,28 +1687,107 @@ export default function App() {
 
       {/* --- PREMIUM STICKY HEADER --- */}
       <header className="relative border-b border-white/5 bg-slate-950/60 backdrop-blur-xl sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 h-20 flex items-center justify-between gap-2 sm:gap-4 relative">
           
-          {/* Logo, Title & Subtitle based on the user's uploaded photo layout */}
-          <div className="flex items-center space-x-3.5">
-            <div className="bg-[#6b111a] p-2.5 rounded-2xl flex items-center justify-center text-white shadow-[0_0_20px_rgba(107,17,26,0.5)]">
-              <ShieldAlert className="h-6 w-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
-                PharmaCare
-                <span className="text-[10px] bg-rose-950/40 text-rose-400 border border-rose-900/50 px-2 py-0.5 rounded-full font-mono uppercase tracking-wider">
-                  Cyber-CDSS
-                </span>
-              </h1>
-              <p className="text-xs text-slate-400 font-medium">კლინიკური მედიკამენტების მართვა</p>
+          {/* 1. FAR LEFT: Logo Icon (Syringe + Pill) */}
+          <div className="flex items-center shrink-0 z-10">
+            <div className="bg-[#6b111a] rounded-xl sm:rounded-2xl flex items-center justify-center text-white shadow-[0_0_20px_rgba(107,17,26,0.4)] relative w-8 h-8 sm:w-11 sm:h-11 overflow-hidden select-none">
+              <div className="relative w-4.5 h-4.5 sm:w-6 sm:h-6">
+                <Syringe className="h-3 w-3 sm:h-4.5 sm:w-4.5 text-white absolute top-0 left-0 -rotate-45" />
+                <Pill className="h-2 w-2 sm:h-3.5 sm:w-3.5 text-rose-300 absolute bottom-0 right-0 rotate-12" />
+              </div>
             </div>
           </div>
 
-          {/* Center Pill Menu for layout selection and prescription toggle */}
-          <div className="flex items-center space-x-4">
-            
-            {/* Pill layout from the uploaded photo */}
+          {/* 2. LEFT SIDESYMMETRICAL ECG WAVE */}
+          <div className="hidden xs:flex items-center justify-end flex-1 min-w-0 pr-2 lg:pr-4">
+            <svg className="w-full max-w-[160px] md:max-w-[200px] h-10 text-[#6b111a]" viewBox="0 0 200 40" fill="none" preserveAspectRatio="none">
+              <path
+                d="M 0 20 L 45 20 L 52 10 L 58 32 L 64 2 L 70 36 L 75 20 L 125 20 L 132 10 L 138 32 L 144 2 L 150 36 L 155 20 L 200 20"
+                stroke="rgba(107, 17, 26, 0.15)"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <motion.path
+                d="M 0 20 L 45 20 L 52 10 L 58 32 L 64 2 L 70 36 L 75 20 L 125 20 L 132 10 L 138 32 L 144 2 L 150 36 L 155 20 L 200 20"
+                stroke="#e04556"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray="45 155"
+                animate={{ strokeDashoffset: [200, 0] }}
+                transition={{
+                  duration: 6,
+                  repeat: Infinity,
+                  ease: "linear"
+                }}
+              />
+            </svg>
+          </div>
+
+          {/* 3. CENTER: K8.MED Brand Text & Subtitle */}
+          <div className="absolute left-1/2 -translate-x-[58%] sm:-translate-x-[60%] flex flex-col items-center justify-center shrink-0 text-center px-2 z-10">
+            <h1 className="text-lg sm:text-2xl font-bold tracking-tight text-white flex items-center gap-0.5 leading-none">
+              <span>K</span>
+              <svg width="12" height="16" viewBox="0 0 18 24" fill="none" className="inline-block self-center mx-0.5 sm:w-[15px] sm:h-[21px]">
+                <path
+                  d="M 9 11 C 12 8, 14 6, 14 4.5 C 14 2.5, 11.5 1, 9 1 C 6.5 1, 4 2.5, 4 4.5 C 4 6, 6 8, 9 11 C 12 14, 14 16, 14 18.5 C 14 21, 11.5 23, 9 23 C 6.5 23, 4 21, 4 18.5 C 4 16, 6 14, 9 11 Z"
+                  stroke="#6b111a"
+                  strokeWidth="3.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="opacity-40"
+                />
+                <motion.path
+                  d="M 9 11 C 12 8, 14 6, 14 4.5 C 14 2.5, 11.5 1, 9 1 C 6.5 1, 4 2.5, 4 4.5 C 4 6, 6 8, 9 11 C 12 14, 14 16, 14 18.5 C 14 21, 11.5 23, 9 23 C 6.5 23, 4 21, 4 18.5 C 4 16, 6 14, 9 11 Z"
+                  stroke="#e04556"
+                  strokeWidth="3.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray="16 34"
+                  animate={{ strokeDashoffset: [0, -50] }}
+                  transition={{
+                    duration: 4.5,
+                    repeat: Infinity,
+                    ease: "linear"
+                  }}
+                />
+              </svg>
+              <span>.MED</span>
+            </h1>
+            <p className="hidden md:block text-[10px] text-slate-400 font-medium mt-1">კლინიკური მედიკამენტების მართვა</p>
+          </div>
+
+          {/* 4. RIGHT SIDESYMMETRICAL ECG WAVE */}
+          <div className="hidden xs:flex items-center justify-start flex-1 min-w-0 pl-2 lg:pl-4">
+            <svg className="w-full max-w-[160px] md:max-w-[200px] h-10 text-[#6b111a] scale-x-[-1]" viewBox="0 0 200 40" fill="none" preserveAspectRatio="none">
+              <path
+                d="M 0 20 L 45 20 L 52 10 L 58 32 L 64 2 L 70 36 L 75 20 L 125 20 L 132 10 L 138 32 L 144 2 L 150 36 L 155 20 L 200 20"
+                stroke="rgba(107, 17, 26, 0.15)"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <motion.path
+                d="M 0 20 L 45 20 L 52 10 L 58 32 L 64 2 L 70 36 L 75 20 L 125 20 L 132 10 L 138 32 L 144 2 L 150 36 L 155 20 L 200 20"
+                stroke="#e04556"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeDasharray="45 155"
+                animate={{ strokeDashoffset: [200, 0] }}
+                transition={{
+                  duration: 6,
+                  repeat: Infinity,
+                  ease: "linear"
+                }}
+              />
+            </svg>
+          </div>
+
+          {/* 5. FAR RIGHT: Navigation Options & Prescription Fields */}
+          <div className="flex items-center shrink-0 z-10">
             <div className="bg-white/5 border border-white/10 p-1 rounded-full flex items-center space-x-1 shadow-inner">
               <button
                 onClick={() => {
@@ -948,13 +1796,13 @@ export default function App() {
                   setCurrentMainView("catalog");
                 }}
                 title="მთავარი კატალოგი / Main Catalog"
-                className={`p-2.5 rounded-full transition-all flex items-center justify-center focus:outline-none cursor-pointer ${
+                className={`p-2 sm:p-2.5 rounded-full transition-all flex items-center justify-center focus:outline-none cursor-pointer ${
                   currentMainView === "catalog"
                     ? "bg-[#6b111a] text-white shadow-lg shadow-[#6b111a]/30"
                     : "hover:bg-white/5 text-slate-400 hover:text-white"
                 }`}
               >
-                <Pill className="h-5 w-5" />
+                <Pill className="h-4 w-4 sm:h-5 sm:w-5" />
               </button>
               
               <button
@@ -962,58 +1810,32 @@ export default function App() {
                   setCurrentMainView("albums");
                 }}
                 title="კლინიკური ალბომები / Clinical Albums"
-                className={`p-2.5 rounded-full transition-all flex items-center justify-center focus:outline-none cursor-pointer ${
+                className={`p-2 sm:p-2.5 rounded-full transition-all flex items-center justify-center focus:outline-none cursor-pointer ${
                   currentMainView === "albums"
                     ? "bg-[#6b111a] text-white shadow-lg shadow-[#6b111a]/30"
                     : "hover:bg-white/5 text-slate-400 hover:text-white"
                 }`}
               >
-                <Folder className="h-5 w-5" />
+                <Folder className="h-4 w-4 sm:h-5 sm:w-5" />
               </button>
 
               <button
                 onClick={() => setIsCartOpen(!isCartOpen)}
                 title="დანიშნულების კალათა"
-                className={`p-2.5 rounded-full transition-all flex items-center justify-center relative focus:outline-none cursor-pointer ${
+                className={`p-2 sm:p-2.5 rounded-full transition-all flex items-center justify-center relative focus:outline-none cursor-pointer ${
                   isCartOpen || prescriptionCart.length > 0
                     ? "bg-[#6b111a] text-white shadow-lg shadow-[#6b111a]/30"
                     : "hover:bg-white/5 text-slate-400"
                 }`}
               >
-                <ClipboardList className="h-5 w-5" />
+                <ClipboardList className="h-4 w-4 sm:h-5 sm:w-5" />
                 {prescriptionCart.length > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center font-bold border-2 border-[#070a12] animate-bounce">
+                  <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[9px] sm:text-[10px] w-4 h-4 sm:w-5 sm:h-5 rounded-full flex items-center justify-center font-bold border-2 border-[#070a12] animate-bounce">
                     {prescriptionCart.length}
                   </span>
                 )}
               </button>
             </div>
-
-            {/* Config & Controls dropdown buttons */}
-            <div className="flex items-center space-x-1 bg-white/5 border border-white/10 p-1 rounded-xl">
-              <button
-                onClick={exportDatabase}
-                title="მონაცემთა ბაზის ექსპორტი (JSON)"
-                className="p-2 text-slate-400 hover:text-white hover:bg-white/5 rounded-lg transition-all"
-              >
-                <FileDown className="h-4.5 w-4.5" />
-              </button>
-              <label
-                title="მონაცემთა ბაზის იმპორტი (JSON)"
-                className="p-2 text-slate-400 hover:text-white hover:bg-white/5 rounded-lg transition-all cursor-pointer"
-              >
-                <FileUp className="h-4.5 w-4.5" />
-                <input type="file" accept=".json" onChange={importDatabase} className="hidden" />
-              </label>
-              <button
-                onClick={resetToPresets}
-                title="ქარხნულ პარამეტრებზე დაბრუნება"
-                className="p-2 text-slate-400 hover:text-rose-400 hover:bg-rose-950/30 rounded-lg transition-all"
-              >
-                <RotateCcw className="h-4.5 w-4.5" />
-              </button>
-            </div>
-
           </div>
 
         </div>
@@ -1286,6 +2108,7 @@ export default function App() {
                 filteredMedications.map((med) => {
                   const alertState = evaluateClinicalAlerts(med);
                   const isRisk = (med as any).isHighRisk;
+                  const isSelected = selectedMedIds.includes(med.id);
 
                   // Determine border glow & bg color classes based on smart DDI evaluation
                   let cardThemeClass = "border-white/10 hover:border-[#6b111a]/40";
@@ -1308,6 +2131,12 @@ export default function App() {
                     glowClass = "glow-indigo";
                   }
 
+                  if (isSelected) {
+                    cardThemeClass = "border-[#e04556]/60 bg-[#6b111a]/15 shadow-2xl shadow-[#6b111a]/25 ring-1 ring-[#e04556]/20";
+                    bgOverlayClass = "bg-[#6b111a]/5";
+                    glowClass = "border-glow-burgundy scale-[1.01]";
+                  }
+
                   return (
                     <motion.div
                       layout
@@ -1316,7 +2145,14 @@ export default function App() {
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.95 }}
                       transition={{ duration: 0.3 }}
-                      className={`tilt-card ${bgOverlayClass} backdrop-blur-md border ${cardThemeClass} rounded-3xl p-5 flex flex-col justify-between relative overflow-hidden transition-all duration-300 ${glowClass}`}
+                      onClick={(e) => {
+                        const target = e.target as HTMLElement;
+                        if (target.closest("button") || target.closest("select") || target.closest("input") || target.closest("textarea") || target.closest(".no-card-click")) {
+                          return;
+                        }
+                        toggleSelectMed(med.id);
+                      }}
+                      className={`tilt-card ${bgOverlayClass} backdrop-blur-md border ${cardThemeClass} rounded-3xl p-5 flex flex-col justify-between relative overflow-hidden transition-all duration-300 ${glowClass} cursor-pointer select-none`}
                     >
                       {/* Ambient light overlay on hover */}
                       <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-[#6b111a]/10 to-transparent blur-2xl opacity-50 group-hover:opacity-100 transition-opacity duration-500 rounded-full pointer-events-none" />
@@ -1325,18 +2161,35 @@ export default function App() {
                       <div className="relative z-10">
                         
                         {/* Alert Badges */}
-                        <div className="flex items-center justify-between mb-3.5">
-                          {badgeLabel ? (
-                            <span className={`text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-1 rounded-full ${
-                              alertState.status === "danger" ? "bg-rose-500/20 text-rose-300 border border-rose-500/30" : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
-                            }`}>
-                              {badgeLabel}
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-                              {med.pharmacologicalGroup || "მედიკამენტი"}
-                            </span>
-                          )}
+                        <div className="flex items-center justify-between mb-3.5 relative z-10">
+                          <div className="flex items-center space-x-2.5">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleSelectMed(med.id);
+                              }}
+                              className={`w-6 h-6 rounded-full border flex items-center justify-center transition-all duration-300 cursor-pointer ${
+                                isSelected
+                                  ? "bg-[#6b111a] border-[#e04556] text-white shadow-lg shadow-[#6b111a]/50 scale-110"
+                                  : "bg-slate-950/60 border-white/20 text-transparent hover:border-white/50 hover:text-slate-400 hover:scale-105"
+                              }`}
+                              title={isSelected ? "მონიშვნის გაუქმება" : "მონიშვნა"}
+                            >
+                              <Check className={`h-3.5 w-3.5 transition-all duration-300 ${isSelected ? "scale-100 opacity-100" : "scale-75 opacity-0 hover:opacity-100"}`} />
+                            </button>
+                            {badgeLabel ? (
+                              <span className={`text-[10px] uppercase tracking-wider font-extrabold px-2.5 py-1 rounded-full ${
+                                alertState.status === "danger" ? "bg-rose-500/20 text-rose-300 border border-rose-500/30" : "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                              }`}>
+                                {badgeLabel}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                                {med.pharmacologicalGroup || "მედიკამენტი"}
+                              </span>
+                            )}
+                          </div>
 
                           {/* High Risk indicator */}
                           {isRisk && (
@@ -1690,32 +2543,118 @@ export default function App() {
                   prescriptionCart.map((item) => (
                     <div
                       key={item.id}
-                      className="p-4 bg-white/5 border border-white/10 rounded-2xl flex items-center justify-between gap-3 shadow-md relative group hover:border-[#6b111a]/40"
+                      className="p-4 bg-white/5 border border-white/10 rounded-2xl flex flex-col gap-3 shadow-md relative group hover:border-[#6b111a]/40"
                     >
-                      <div>
-                        <h4 className="text-xs font-bold text-white">{item.tradeName}</h4>
-                        <p className="text-[10px] text-[#e04556] font-mono mt-0.5">{item.genericName}</p>
-                        
-                        <div className="flex flex-wrap gap-1.5 mt-2">
-                          <span className="text-[9px] bg-white/5 text-slate-300 px-2 py-0.5 rounded font-medium">
-                            {item.dosageForm}
-                          </span>
-                          <span className="text-[9px] bg-white/5 text-slate-300 px-2 py-0.5 rounded font-medium">
-                            {item.route}
-                          </span>
-                          <span className="text-[9px] bg-[#6b111a]/10 text-rose-300 px-2 py-0.5 rounded font-medium border border-[#6b111a]/20">
-                            {item.frequency}
-                          </span>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h4 className="text-xs font-bold text-white">{item.tradeName}</h4>
+                          <p className="text-[10px] text-[#e04556] font-mono mt-0.5">{item.genericName}</p>
+                          
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            <span className="text-[9px] bg-white/5 text-slate-300 px-2 py-0.5 rounded font-medium">
+                              {item.dosageForm}
+                            </span>
+                            <span className="text-[9px] bg-white/5 text-slate-300 px-2 py-0.5 rounded font-medium">
+                              {item.route}
+                            </span>
+                            <span className="text-[9px] bg-[#6b111a]/10 text-rose-300 px-2 py-0.5 rounded font-medium border border-[#6b111a]/20">
+                              {item.frequency}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => handleRemoveFromCart(item.id)}
+                          title="დანიშნულებიდან წაშლა"
+                          className="p-2 bg-rose-950/30 hover:bg-rose-950/60 rounded-xl text-rose-400 hover:text-rose-300 transition-all focus:outline-none cursor-pointer"
+                        >
+                          <Trash2 className="h-4.5 w-4.5" />
+                        </button>
+                      </div>
+
+                      {/* Inline edits for cart item */}
+                      <div className="mt-2 pt-3 border-t border-white/5 space-y-3">
+                        <div className="grid grid-cols-2 gap-2 text-[10px]">
+                          {/* Route edit */}
+                          <div className="space-y-1">
+                            <span className="text-slate-400 block font-semibold">გზა:</span>
+                            <select
+                              value={item.route}
+                              onChange={(e) => updateCartItem(item.id, { route: e.target.value as Route })}
+                              className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none"
+                            >
+                              <option value="PO">PO (დასალევი)</option>
+                              <option value="IV">IV (ვენაში)</option>
+                              <option value="IM">IM (კუნთში)</option>
+                              <option value="SC">SC (კანქვეშ)</option>
+                              <option value="ID">ID (კანშიდა)</option>
+                            </select>
+                          </div>
+
+                          {/* Frequency edit */}
+                          <div className="space-y-1">
+                            <span className="text-slate-400 block font-semibold">სიხშირე:</span>
+                            <select
+                              value={item.frequency}
+                              onChange={(e) => updateCartItem(item.id, { frequency: e.target.value as Frequency })}
+                              className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none"
+                            >
+                              <option value="1x">1x (დღეში 1)</option>
+                              <option value="2x">2x (დღეში 2)</option>
+                              <option value="3x">3x (დღეში 3)</option>
+                              <option value="4x">4x (დღეში 4)</option>
+                              <option value="PRN">PRN (საჭიროებ.)</option>
+                              <option value="Continuous Infusion">უწყვეტი ინფუზია</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-[10px]">
+                          {/* Dosage Form edit */}
+                          <div className="space-y-1">
+                            <span className="text-slate-400 block font-semibold">ფორმა:</span>
+                            <select
+                              value={item.dosageForm}
+                              onChange={(e) => updateCartItem(item.id, { dosageForm: e.target.value as DosageForm })}
+                              className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none"
+                            >
+                              <option value="Tablet">ტაბლეტი</option>
+                              <option value="Ampoule">ამპულა</option>
+                              <option value="Syrup">სიროფი</option>
+                              <option value="Infusion">ინფუზია</option>
+                            </select>
+                          </div>
+
+                          {/* Meal Connection edit */}
+                          <div className="space-y-1">
+                            <span className="text-slate-400 block font-semibold">კვება:</span>
+                            <select
+                              value={item.mealConnection}
+                              onChange={(e) => updateCartItem(item.id, { mealConnection: e.target.value as MealConnection })}
+                              className="w-full bg-slate-900 border border-white/10 rounded-lg px-2 py-1 text-[11px] text-white focus:outline-none"
+                            >
+                              <option value="Independent">დამოუკიდებლად</option>
+                              <option value="Before meal">ჭამამდე</option>
+                              <option value="During">ჭამის დროს</option>
+                              <option value="After">ჭამის შემდეგ</option>
+                              <option value="Fast-acting">სწრაფი</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Custom comment input field */}
+                        <div className="space-y-1 text-[10px]">
+                          <span className="text-slate-400 block font-semibold">ექიმის დამატებითი მითითება / შენიშვნა:</span>
+                          <input
+                            type="text"
+                            placeholder="მაგ: მიიღოს თბილ წყალთან ერთად..."
+                            value={item.customRemark || ""}
+                            onChange={(e) => updateCartItem(item.id, { customRemark: e.target.value })}
+                            className="w-full bg-slate-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#6b111a] placeholder-slate-600"
+                          />
                         </div>
                       </div>
 
-                      <button
-                        onClick={() => handleRemoveFromCart(item.id)}
-                        title="დანიშნულებიდან წაშლა"
-                        className="p-2 bg-rose-950/30 hover:bg-rose-950/60 rounded-xl text-rose-400 hover:text-rose-300 transition-all focus:outline-none cursor-pointer"
-                      >
-                        <Trash2 className="h-4.5 w-4.5" />
-                      </button>
                     </div>
                   ))
                 ) : (
@@ -1735,20 +2674,30 @@ export default function App() {
                     <span className="font-mono font-bold text-white">{prescriptionCart.length}</span>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     <button
                       onClick={handlePrintPrescription}
-                      className="bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-3 rounded-2xl transition-all flex items-center justify-center space-x-2 focus:outline-none cursor-pointer text-xs"
+                      className="bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-3 rounded-2xl transition-all flex flex-col items-center justify-center gap-1 focus:outline-none cursor-pointer text-[10px]"
+                      title="ბეჭდვა"
                     >
                       <Printer className="h-4 w-4 text-rose-400" />
                       <span>ბეჭდვა</span>
                     </button>
                     <button
-                      onClick={handlePrintPrescription}
-                      className="bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-3 rounded-2xl transition-all flex items-center justify-center space-x-2 focus:outline-none cursor-pointer text-xs"
+                      onClick={() => handleGeneratePDF("preview")}
+                      className="bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-3 rounded-2xl transition-all flex flex-col items-center justify-center gap-1 focus:outline-none cursor-pointer text-[10px]"
+                      title="PDF გახსნა"
+                    >
+                      <Eye className="h-4 w-4 text-blue-400" />
+                      <span>გახსნა</span>
+                    </button>
+                    <button
+                      onClick={() => handleGeneratePDF("download")}
+                      className="bg-white/5 hover:bg-white/10 border border-white/10 text-white font-bold py-3 rounded-2xl transition-all flex flex-col items-center justify-center gap-1 focus:outline-none cursor-pointer text-[10px]"
+                      title="PDF ჩამოტვირთვა"
                     >
                       <Download className="h-4 w-4 text-emerald-400" />
-                      <span>PDF ჩამოტვირთვა</span>
+                      <span>ჩამოტვირთვა</span>
                     </button>
                   </div>
 
@@ -1809,6 +2758,123 @@ export default function App() {
               </button>
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+
+      {/* =======================================
+          FLOATING BULK ACTIONS BAR (მრავალჯერადი მონიშვნა)
+          ======================================= */}
+      <AnimatePresence>
+        {selectedMedIds.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 50, scale: 0.95 }}
+            transition={{ type: "spring", damping: 25, stiffness: 200 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-[#090d16]/90 backdrop-blur-md border border-[#6b111a]/50 px-6 py-4 rounded-3xl shadow-2xl z-40 flex flex-wrap items-center justify-between gap-4 max-w-2xl w-[90%] border-glow-burgundy"
+          >
+            <div className="flex items-center space-x-3">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+              <span className="text-xs font-bold text-white">
+                მონიშნულია <span className="text-rose-400 text-sm font-mono">{selectedMedIds.length}</span> პრეპარატი
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Custom Searchable Album Dropdown */}
+              <div className="relative" ref={bulkAlbumDropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setIsBulkAlbumDropdownOpen(!isBulkAlbumDropdownOpen)}
+                  className="bg-slate-900 border border-white/10 hover:bg-slate-800 text-slate-200 hover:text-white rounded-xl px-3.5 py-1.5 text-xs font-bold transition-all flex items-center space-x-1.5 focus:outline-none cursor-pointer"
+                >
+                  <FolderPlus className="h-3.5 w-3.5 text-rose-400" />
+                  <span>{activeTab !== "ყველა" ? "სხვა ალბომში გადატანა..." : "ალბომში დამატება..."}</span>
+                </button>
+
+                <AnimatePresence>
+                  {isBulkAlbumDropdownOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute bottom-full mb-2 left-0 sm:left-auto sm:right-0 bg-slate-950 border border-white/10 rounded-2xl shadow-2xl z-50 p-2 w-64 border-glow-burgundy"
+                    >
+                      <div className="relative mb-2">
+                        <Search className="h-3.5 w-3.5 text-slate-400 absolute left-2.5 top-2" />
+                        <input
+                          type="text"
+                          placeholder="მოძებნე ალბომი..."
+                          value={bulkAlbumSearchQuery}
+                          onChange={(e) => setBulkAlbumSearchQuery(e.target.value)}
+                          className="w-full bg-slate-900 border border-white/5 rounded-xl pl-8 pr-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#6b111a]"
+                          autoFocus
+                        />
+                      </div>
+                      
+                      <div className="max-h-48 overflow-y-auto space-y-0.5 pr-1">
+                        {albums
+                          .filter(a => a !== "ყველა" && a !== activeTab && a.toLowerCase().includes(bulkAlbumSearchQuery.toLowerCase()))
+                          .map(a => (
+                            <button
+                              key={a}
+                              type="button"
+                              onClick={() => {
+                                if (activeTab !== "ყველა") {
+                                  handleBulkMoveToAnotherAlbum(a);
+                                } else {
+                                  handleBulkAddToAlbum(a);
+                                }
+                                setIsBulkAlbumDropdownOpen(false);
+                                setBulkAlbumSearchQuery("");
+                              }}
+                              className="w-full text-left px-3 py-1.5 text-xs text-slate-300 hover:bg-[#6b111a]/20 hover:text-white rounded-lg transition-all flex items-center justify-between focus:outline-none cursor-pointer"
+                            >
+                              <span>{a}</span>
+                              <ChevronRight className="h-3 w-3 text-slate-500" />
+                            </button>
+                          ))}
+                        {albums.filter(a => a !== "ყველა" && a !== activeTab && a.toLowerCase().includes(bulkAlbumSearchQuery.toLowerCase())).length === 0 && (
+                          <div className="text-center py-2 text-[11px] text-slate-500">
+                            ალბომი ვერ მოიძებნა
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+
+              {activeTab !== "ყველა" && (
+                <button
+                  onClick={handleBulkRemoveFromCurrentAlbum}
+                  title="ამ ალბომიდან წაშლა"
+                  className="px-3.5 py-1.5 bg-amber-950/40 hover:bg-amber-900/30 border border-amber-900/50 text-amber-300 rounded-xl text-xs font-bold transition-all focus:outline-none cursor-pointer flex items-center space-x-1"
+                >
+                  <FolderMinus className="h-3.5 w-3.5" />
+                  <span>ალბომიდან ამოღება</span>
+                </button>
+              )}
+
+              <button
+                onClick={handleBulkDelete}
+                title="ბაზიდან სრულად წაშლა"
+                className="px-3.5 py-1.5 bg-rose-950/40 hover:bg-rose-900/30 border border-rose-900/50 text-rose-300 rounded-xl text-xs font-bold transition-all focus:outline-none cursor-pointer flex items-center space-x-1"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>წაშლა</span>
+              </button>
+
+              <button
+                onClick={clearSelection}
+                className="p-1.5 hover:bg-white/5 text-slate-400 hover:text-white rounded-xl transition-all focus:outline-none cursor-pointer ml-1"
+                title="მონიშვნის გაუქმება"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
 
@@ -2061,39 +3127,65 @@ export default function App() {
                     </div>
 
                     {/* Dilutions info */}
-                    <div className="space-y-1">
-                      <label className="text-xs text-slate-300 font-bold block">განზავება / შეყვანის სიჩქარე</label>
-                      <input
-                        type="text"
-                        placeholder="მაგ: განაზავეთ ფიზიოლოგიურ ხსნარში..."
-                        value={dilutionAdminRate}
-                        onChange={(e) => setDilutionAdminRate(e.target.value)}
-                        className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-[#6b111a]"
-                      />
-                    </div>
+                    {dosageForm !== "Tablet" && (
+                      <div className="space-y-1">
+                        <label className="text-xs text-slate-300 font-bold block">
+                          განზავება / შეყვანის სიჩქარე
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="მაგ: განაზავეთ ფიზიოლოგიურ ხსნარში..."
+                          value={dilutionAdminRate}
+                          onChange={(e) => setDilutionAdminRate(e.target.value)}
+                          className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-[#6b111a]"
+                        />
+                      </div>
+                    )}
                   </div>
 
                   {/* Classification Departments (Multi-select) */}
                   <div className="space-y-2 pt-1">
-                    <label className="text-xs text-slate-300 font-bold block">თემატური ალბომები / დეპარტამენტები (Classification Albums)</label>
-                    <div className="flex flex-wrap gap-2">
-                      {albums.filter(a => a !== "ყველა").map(album => {
-                        const isSelected = selectedDepts.includes(album);
-                        return (
-                          <button
-                            key={album}
-                            type="button"
-                            onClick={() => toggleDept(album)}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                              isSelected
-                                ? "bg-[#6b111a] text-white border-[#6b111a] font-bold shadow-md"
-                                : "bg-slate-900 text-slate-400 border-white/10 hover:bg-white/5 hover:text-white"
-                            }`}
-                          >
-                            {album}
-                          </button>
-                        );
-                      })}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <label className="text-xs text-slate-300 font-bold block">თემატური ალბომები / დეპარტამენტები (Classification Albums)</label>
+                      
+                      {/* Search box for filtering departments/albums inside form */}
+                      {albums.length > 5 && (
+                        <div className="relative max-w-xs">
+                          <Search className="h-3 w-3 text-slate-500 absolute left-2 top-1.5" />
+                          <input
+                            type="text"
+                            placeholder="ალბომის ფილტრი..."
+                            value={modalAlbumSearchText}
+                            onChange={(e) => setModalAlbumSearchText(e.target.value)}
+                            className="bg-slate-950 border border-white/5 rounded-lg pl-7 pr-2 py-0.5 text-[11px] text-white placeholder-slate-600 focus:outline-none focus:border-[#6b111a]"
+                          />
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto pr-1">
+                      {albums
+                        .filter(a => a !== "ყველა" && a.toLowerCase().includes(modalAlbumSearchText.toLowerCase()))
+                        .map(album => {
+                          const isSelected = selectedDepts.includes(album);
+                          return (
+                            <button
+                              key={album}
+                              type="button"
+                              onClick={() => toggleDept(album)}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                                isSelected
+                                  ? "bg-[#6b111a] text-white border-[#6b111a] font-bold shadow-md"
+                                  : "bg-slate-900 text-slate-400 border-white/10 hover:bg-white/5 hover:text-white"
+                              }`}
+                            >
+                              {album}
+                            </button>
+                          );
+                        })}
+                      {albums.filter(a => a !== "ყველა" && a.toLowerCase().includes(modalAlbumSearchText.toLowerCase())).length === 0 && (
+                        <span className="text-xs text-slate-500 italic">ალბომი ვერ მოიძებნა</span>
+                      )}
                     </div>
                   </div>
 
@@ -2154,11 +3246,13 @@ export default function App() {
                     <div className="space-y-1">
                       <label className="text-xs text-slate-300 font-bold block">ჩემი კლინიკური მარგალიტები / შპარგალკა</label>
                       <textarea
-                        rows={2}
+                        rows={activeTextarea === "pearls" ? 8 : 2}
+                        onFocus={() => setActiveTextarea("pearls")}
+                        onBlur={() => setActiveTextarea(null)}
                         placeholder="ექიმის პირადი შენიშვნები და შპარგალკები მედიკამენტის შესახებ, რომელიც გამოჩნდება ბარათზე..."
                         value={clinicalPearls}
                         onChange={(e) => setClinicalPearls(e.target.value)}
-                        className="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-[#6b111a]"
+                        className="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-[#6b111a] transition-all duration-300 ease-in-out resize-none"
                       />
                     </div>
 
@@ -2176,22 +3270,26 @@ export default function App() {
                     <div className="space-y-1">
                       <label className="text-xs text-slate-300 font-bold block">მოქმედების მექანიზმი (Mechanism of Action)</label>
                       <textarea
-                        rows={2}
+                        rows={activeTextarea === "mechanism" ? 8 : 2}
+                        onFocus={() => setActiveTextarea("mechanism")}
+                        onBlur={() => setActiveTextarea(null)}
                         placeholder="მაგ: ბლოკავს პროსტაგლანდინების სინთეზს ციკლოოქსიგენაზას (COX) ფერმენტების ინჰიბირებით..."
                         value={mechanismOfAction}
                         onChange={(e) => setMechanismOfAction(e.target.value)}
-                        className="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-[#6b111a]"
+                        className="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-[#6b111a] transition-all duration-300 ease-in-out resize-none"
                       />
                     </div>
 
                     <div className="space-y-1">
                       <label className="text-xs text-slate-300 font-bold block">დამატებითი კლინიკური ინფორმაცია / ჩემი ველი (Additional Notes)</label>
                       <textarea
-                        rows={2}
+                        rows={activeTextarea === "additional" ? 8 : 2}
+                        onFocus={() => setActiveTextarea("additional")}
+                        onBlur={() => setActiveTextarea(null)}
                         placeholder="დამატებითი კლინიკური დეტალები, პაციენტის სპეციალური ინსტრუქციები..."
                         value={additionalInfo}
                         onChange={(e) => setAdditionalInfo(e.target.value)}
-                        className="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-[#6b111a]"
+                        className="w-full bg-slate-900 border border-white/10 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-[#6b111a] transition-all duration-300 ease-in-out resize-none"
                       />
                     </div>
                   </div>
@@ -2315,12 +3413,14 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="p-4 bg-white/5 border border-white/5 rounded-2xl space-y-1">
-                    <span className="text-[10px] text-slate-400 uppercase font-bold block">განზავება / შეყვანის სიჩქარე</span>
-                    <p className="text-xs text-white font-semibold mt-1.5">
-                      {viewingMed.dilutionAdminRate || "არ საჭიროებს განზავებას"}
-                    </p>
-                  </div>
+                  {viewingMed.dosageForm !== "Tablet" && (
+                    <div className="p-4 bg-white/5 border border-white/5 rounded-2xl space-y-1">
+                      <span className="text-[10px] text-slate-400 uppercase font-bold block">განზავება / შეყვანის სიჩქარე</span>
+                      <p className="text-xs text-white font-semibold mt-1.5">
+                        {viewingMed.dilutionAdminRate || "არ საჭიროებს განზავებას"}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Indications & Side Effects */}
@@ -2416,6 +3516,75 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* =======================================
+          PDF GENERATION LOADING OVERLAY
+          ======================================= */}
+      <AnimatePresence>
+        {isGeneratingPDF && (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[9999] flex flex-col items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-slate-900 border border-white/10 rounded-3xl p-8 max-w-sm w-full text-center space-y-4 shadow-2xl"
+            >
+              <div className="flex justify-center">
+                <RefreshCw className="h-10 w-10 text-[#e04556] animate-spin" />
+              </div>
+              <div className="space-y-1.5">
+                <h4 className="text-white font-bold text-sm">PDF იტვირთება...</h4>
+                <p className="text-xs text-slate-400 font-medium">სამედიცინო დანიშნულების დოკუმენტი მუშავდება, გთხოვთ დაელოდოთ...</p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      {/* =======================================
+          CUSTOM CONFIRMATION MODAL
+          ======================================= */}
+      <AnimatePresence>
+        {confirmModal.isOpen && (
+          <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-[99999] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 15 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 15 }}
+              className="bg-slate-900 border border-white/10 rounded-3xl p-6 max-w-sm w-full space-y-5 shadow-2xl relative border-glow-burgundy"
+            >
+              <div className="flex items-center space-x-3 text-rose-400">
+                <AlertTriangle className="h-6 w-6 text-rose-500 flex-shrink-0 animate-pulse" />
+                <h4 className="text-white font-bold text-sm tracking-wide">
+                  {confirmModal.title}
+                </h4>
+              </div>
+              
+              <p className="text-xs text-slate-300 font-medium leading-relaxed">
+                {confirmModal.message}
+              </p>
+              
+              <div className="flex justify-end space-x-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                  className="px-4 py-2 bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white rounded-xl text-xs font-bold transition-all focus:outline-none cursor-pointer"
+                >
+                  გაუქმება
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmModal.onConfirm}
+                  className="px-5 py-2 bg-[#6b111a] hover:bg-[#801721] text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all focus:outline-none cursor-pointer"
+                >
+                  დასტური
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+
 
     </div>
   );

@@ -1,40 +1,20 @@
-# K8.CURA ∞
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
+</div>
 
-კლინიკური გადაწყვეტილების მხარდამჭერი სისტემა (CDSS) გადაუდებელი მედიცინისა და ენდოკრინოლოგიისთვის.
+# Run and deploy your AI Studio app
 
-## სტეკი
+This contains everything you need to run your app locally.
 
-- React 19 + Vite 6 + Tailwind 4 (frontend)
-- Vercel Serverless Function (`/api/med-detail.js`) მედიკამენტების ცოცხალი სინქრონიზაციისთვის Aversi/PSP-ის საიტებიდან (Cheerio-ით)
+View your app in AI Studio: https://ai.studio/apps/e68605e6-2e48-4c97-995a-7fa8008931c2
 
-## ლოკალური გაშვება
+## Run Locally
 
-**წინაპირობა:** Node.js 18+ და [Vercel CLI](https://vercel.com/docs/cli) (`npm i -g vercel`)
+**Prerequisites:**  Node.js
 
-```bash
-npm install
-vercel dev
-```
 
-`vercel dev`-ის გამოყენება აუცილებელია (და არა უბრალო `vite`), რადგან ის `/api` საქაღალდეში არსებულ სერვერლეს ფუნქციებსაც უშვებს ლოკალურად — ზუსტად ისე, როგორც პროდაქშენში იმუშავებს.
-
-## დეპლოი Vercel-ზე
-
-1. გადადით [vercel.com](https://vercel.com) და დააკავშირეთ ეს რეპოზიტორი (ან გაუშვით `vercel` CLI-დან).
-2. Vercel ავტომატურად ამოიცნობს Vite ფრეიმვორკს (`npm run build`, output: `dist`) და `/api/med-detail.js`-ს დამატებით სერვერლეს ფუნქციად.
-3. დამატებითი Environment Variables არ არის საჭირო — სკრეიპერს გარე API გასაღები არ სჭირდება.
-
-## სტრუქტურა
-
-```
-├── api/
-│   └── med-detail.js   # Vercel Serverless Function — Aversi/PSP სკრეიპინგი (Cheerio)
-├── src/
-│   ├── App.tsx
-│   ├── data.ts
-│   ├── types.ts
-│   └── main.tsx
-├── index.html
-├── vite.config.ts
-└── vercel.json
-```
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

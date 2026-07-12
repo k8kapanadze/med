@@ -42,6 +42,7 @@ export interface Medication {
   isFavorite: boolean;
   price?: number;
   source?: "Aversi" | "PSP" | "Custom";
+  customRemark?: string; // დამატებითი კომენტარი/შენიშვნა დანიშნულებისთვის
 }
 
 export interface SyncDrugResult {
