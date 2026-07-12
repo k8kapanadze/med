@@ -61,10 +61,13 @@ export default async function handler(req: any, res: any) {
         "კლინიკურ ქართულ ენაზე, მკაფიო და ზუსტი სამედიცინო ტერმინოლოგიით.",
     });
 
-    const result = await model.generateContent(
-      `მედიკამენტი: ${query.trim()}\n\nდააბრუნე ინფორმაცია ამ მედიკამენტის შესახებ ზემოთ აღწერილი JSON ფორმატით.`
-    );
-
+const result = await model.generateContent(
+  `მედიკამენტი: ${query.trim()}\n\nდააბრუნე ინფორმაცია ამ მედიკამენტის შესახებ ზემოთ აღწერილი JSON ფორმატით.`
+); 
+  const result = await model.generateContent({
+  contents: [{ role: "user", parts: [{ text: `მედიკამენტი: ${query.trim()}\n\nდააბრუნე JSON.` }] }],
+  generationConfig: { responseMimeType: "application/json" },
+});
     // If Gemini's safety filters blocked the prompt/response, there's no usable text —
     // surface that clearly instead of letting .text() throw an opaque error.
     const blockReason = result.response.promptFeedback?.blockReason;
