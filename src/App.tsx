@@ -254,7 +254,7 @@ export default function App() {
   }, [diseaseSearchText, patientDiseases]);
 
   // --- Form Populating Functions ---
-  const openAddModal = () => {
+ const openAddModal = () => {
     setEditingMed(null);
     setTradeName("");
     setGenericName("");
@@ -275,9 +275,6 @@ export default function App() {
     setPrice(undefined);
     setSource("Custom");
     setIsHighRisk(false);
-    setPharmacyQuery("");
-    setSyncResults([]);
-    setSyncMessage(null);
     setIsModalOpen(true);
   };
 
@@ -302,9 +299,6 @@ export default function App() {
     setPrice(med.price);
     setSource(med.source || "Custom");
     setIsHighRisk((med as any).isHighRisk || false);
-    setPharmacyQuery("");
-    setSyncResults([]);
-    setSyncMessage(null);
     setIsModalOpen(true);
   };
 
