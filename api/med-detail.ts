@@ -45,10 +45,12 @@ export default async function handler(req: any, res: any) {
     const genAI = getGenAIClient();
 
     const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-pro",
+      model: "models/gemini-1.5-flash", // დაამატეთ "models/" პრეფიქსი
       generationConfig: {
         responseMimeType: "application/json",
       },
+      // ...
+    });
       systemInstruction:
         "შენ ხარ გამოცდილი კლინიკური ფარმაკოლოგი (expert clinical pharmacologist). " +
         "მომხმარებელი მოგცემს მედიკამენტის სახელს. შენ უნდა უპასუხო მხოლოდ ვალიდური, " +
