@@ -50,6 +50,7 @@ import {
 } from "lucide-react";
 import { Medication, Department, Route, DosageForm, Frequency, MealConnection, TimeOfDay } from "./types";
 import { PRESET_MEDICATIONS } from "./data";
+import MedSyncWidget, { SyncedMedData } from "./components/MedSyncWidget";
 
 const getAlbumIcon = (albumName: string) => {
   const name = albumName.toLowerCase();
@@ -232,13 +233,6 @@ export default function App() {
   const [source, setSource] = useState<"Aversi" | "PSP" | "Custom">("Custom");
   const [isHighRisk, setIsHighRisk] = useState(false);
 
-  // --- Scraper / Pharmacy Sync States ---
-  const [pharmacyQuery, setPharmacyQuery] = useState("");
-  const [pharmacySource, setPharmacySource] = useState<"aversi" | "psp">("psp");
-  const [isSyncLoading, setIsSyncLoading] = useState(false);
-  const [syncResults, setSyncResults] = useState<any[]>([]);
-  const [syncMessage, setSyncMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
-
   // --- Preset Pathologies List ---
   const DISEASE_PRESETS = [
     { key: "Diabetes", name: "შაქრიანი დიაბეტი (Diabetes)" },
@@ -399,79 +393,6 @@ export default function App() {
       clinicalPearls: contraindicationsStr !== "ინფორმაცია არ არის მითითებული" ? `უკუჩვენება: ${contraindicationsStr}` : "ინფორმაცია არ არის მითითებული",
       pharmacologicalGroup: mechanismStr !== "ინფორმაცია არ არის მითითებული" && mechanismStr.length < 50 ? mechanismStr : "სხვა"
     };
-  };
-
-  const triggerPharmacySync = async () => {
-    if (!pharmacyQuery || pharmacyQuery.trim().length < 2) {
-      setSyncMessage({ text: "ჩაწერეთ მინიმუმ 2 სიმბოლო მოსაძებნად", type: "info" });
-      return;
-    }
-
-    setIsSyncLoading(true);
-    setSyncMessage(null);
-    setSyncResults([]);
-
-    const term = pharmacyQuery.trim();
-
-    try {
-      // Query our backend endpoint that calls Gemini (gemini-1.5-flash). No local/mock fallback —
-      // if this fails, we surface a clear error instead of silently substituting fake data.
-      const response = await fetch(`/api/med-detail?query=${encodeURIComponent(term)}`);
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok || !data) {
-        throw new Error((data && data.error) || `Gemini API Error: სერვერმა დააბრუნა სტატუსი ${response.status}`);
-      }
-      if (data.error) {
-        throw new Error(`Gemini API Error: ${data.error}`);
-      }
-
-      const formattedTradeName = term.charAt(0).toUpperCase() + term.slice(1);
-
-      let indicationsArray: string[] = [];
-      if (Array.isArray(data.indications)) {
-        indicationsArray = data.indications;
-      } else if (typeof data.indications === "string") {
-        indicationsArray = data.indications.split(/[,;\n]+/).map((i: string) => i.trim()).filter(Boolean);
-      }
-
-      const syncResultItem = {
-        tradeName: formattedTradeName,
-        genericName: formattedTradeName,
-        price: 5.50,
-        source: "Gemini AI Clinical DB",
-        indications: indicationsArray.length > 0 ? indicationsArray : ["ინფორმაცია არ არის მითითებული"],
-        sideEffects: data.sideEffects || "ინფორმაცია არ არის მითითებული",
-        mechanismOfAction: data.mechanism || data.mechanismOfAction || "ინფორმაცია არ არის მითითებული",
-        clinicalPearls: "ინფორმაცია მოძიებულია და გენერირებულია AI კლინიკური ასისტენტის მიერ.",
-        pharmacologicalGroup: "კლინიკური კლასი",
-        route: "PO" as any,
-        dosageForm: "Tablet" as any,
-        frequency: "1x" as any,
-        mealConnection: "Independent" as any,
-        timeOfDay: ["Morning"],
-        contraindications: []
-      };
-
-      // Auto-fill immediately — no click-to-apply step. The moment Gemini's JSON lands,
-      // the form state updates and the textareas render filled.
-      applySyncResult(syncResultItem);
-      setSyncResults([syncResultItem]);
-
-      setSyncMessage({
-        text: `✨ სინქრონიზაცია წარმატებულია! ავტომატურად შეივსო "${formattedTradeName}" Gemini AI-დან.`,
-        type: "success"
-      });
-    } catch (err: any) {
-      console.error("Gemini sync failed:", err);
-      setSyncMessage({
-        text: `❌ ${err.message || "Gemini API Error: სინქრონიზაცია ვერ მოხერხდა."}`,
-        type: "error"
-      });
-      setSyncResults([]);
-    } finally {
-      setIsSyncLoading(false);
-    }
   };
 
 
@@ -2692,84 +2613,9 @@ export default function App() {
               {/* Scrollable form body */}
               <div className="p-6 overflow-y-auto max-h-[70vh] space-y-6">
                 
-                {/* 1. Live Gemini Clinical Sync integration widget */}
-                <div className="p-5 rounded-2xl bg-slate-950 border border-white/5 space-y-4">
-                  <div className="flex items-center space-x-2">
-                    <RefreshCw className={`h-4.5 w-4.5 text-[#e04556] ${isSyncLoading ? 'animate-spin' : ''}`} />
-                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                      AI კლინიკური სინქრონიზაცია (Gemini Smart Knowledge Base)
-                    </h4>
-                  </div>
+                {/* 1. Live Gemini Clinical Sync widget (standalone component, immediate auto-fill) */}
+                <MedSyncWidget onAutoFill={applySyncResult} />
 
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <div className="flex-1 relative">
-                      <input
-                        type="text"
-                        placeholder="ჩაწერეთ პრეპარატი (მაგ: ნუროფენი, დექსამეთაზონი, Captopril...)"
-                        value={pharmacyQuery}
-                        onChange={(e) => setPharmacyQuery(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            triggerPharmacySync();
-                          }
-                        }}
-                        className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#6b111a]"
-                      />
-                    </div>
-
-                    <div className="flex space-x-2">
-                      <button
-                        type="button"
-                        onClick={triggerPharmacySync}
-                        disabled={isSyncLoading}
-                        className="bg-[#6b111a] hover:bg-[#801721] text-white px-4 py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-50 flex items-center space-x-1.5 focus:outline-none cursor-pointer"
-                      >
-                        {isSyncLoading ? (
-                          <>
-                            <RefreshCw className="h-3 w-3 animate-spin" />
-                            <span>სინქრონიზაცია...</span>
-                          </>
-                        ) : (
-                          <span>სინქრონიზაცია</span>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Sync status messages and results */}
-                  {syncMessage && (
-                    <p className={`text-[11px] font-medium ${
-                      syncMessage.type === "success" ? "text-emerald-400" : syncMessage.type === "error" ? "text-rose-400" : "text-amber-400"
-                    }`}>
-                      {syncMessage.text}
-                    </p>
-                  )}
-
-                  {syncResults.length > 0 && (
-                    <div className="space-y-1.5">
-                      <span className="text-[10px] text-slate-400 uppercase font-bold tracking-wide">ავტომატურად შევსებული:</span>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1">
-                        {syncResults.map((result, idx) => (
-                          <div
-                            key={idx}
-                            className="p-2.5 bg-white/5 rounded-xl border border-white/5 flex justify-between items-center text-left"
-                          >
-                            <div>
-                              <p className="text-xs font-bold text-white">{result.tradeName}</p>
-                              {result.genericName && (
-                                <p className="text-[10px] text-slate-400 font-mono mt-0.5">{result.genericName}</p>
-                              )}
-                            </div>
-                            <span className="text-[10px] bg-rose-950/40 text-rose-300 border border-rose-900/30 px-2 py-0.5 rounded font-bold">
-                              {result.source || "Gemini"}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
 
                 {/* 2. FORM PROPER */}
                 <form id="cdss-med-form" onSubmit={handleSaveMedication} className="space-y-5">
